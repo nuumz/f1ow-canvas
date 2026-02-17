@@ -1,0 +1,32 @@
+# Source
+src/
+docs/
+assets/
+.github/
+
+# Config
+tsconfig.json
+tsconfig.node.json
+vite.config.ts
+index.html
+
+# Dev files
+.npmrc
+.gitignore
+.eslintrc*
+.prettierrc*
+.editorconfig
+*.log
+
+# Lock files
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+node_modules/
+*.tgz
