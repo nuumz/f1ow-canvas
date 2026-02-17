@@ -14,6 +14,7 @@
 import type { CanvasElement } from '@/types';
 import { exportToSVG } from '@/utils/export';
 import { generateId } from '@/utils/id';
+import { createWorker, type WorkerConfig } from '@/utils/workerFactory';
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -37,6 +38,11 @@ export class ExportWorkerManager {
     private _worker: Worker | null = null;
     private _pending: Map<string, PendingRequest> = new Map();
     private _workerSupported = true;
+    private _workerConfig?: WorkerConfig;
+
+    constructor(workerConfig?: WorkerConfig) {
+        this._workerConfig = workerConfig;
+    }
 
     // ─── Lazy Worker initialization ───────────────────────────
 
@@ -45,17 +51,25 @@ export class ExportWorkerManager {
         if (this._worker) return this._worker;
 
         try {
-            this._worker = new Worker(
-                new URL('../workers/exportWorker.ts', import.meta.url),
-                { type: 'module' },
+            this._worker = createWorker(
+                () => new URL('../workers/exportWorker.ts', import.meta.url),
+                this._workerConfig,
             );
+
+            if (!this._worker) {
+                this._workerSupported = false;
+                return null;
+            }
+
             this._worker.onmessage = this._onMessage;
             this._worker.onerror = (err) => {
                 console.warn('[ExportWorkerManager] Worker error, falling back to sync:', err.message);
                 this._workerSupported = false;
                 this._rejectAll(new Error('Export Worker failed'));
-                this._worker?.terminate();
-                this._worker = null;
+                if (this._worker) {
+                    this._worker.terminate();
+                    this._worker = null;
+                }
             };
             return this._worker;
         } catch {
@@ -175,17 +189,32 @@ export class ExportWorkerManager {
 // ─── Singleton ────────────────────────────────────────────────
 
 let _instance: ExportWorkerManager | null = null;
+let _config: WorkerConfig | undefined;
 
-/** Get or create the shared ExportWorkerManager singleton */
-export function getExportWorkerManager(): ExportWorkerManager {
+/**
+ * Get or create the shared ExportWorkerManager singleton.
+ *
+ * @param workerConfig - Optional worker configuration (URL or disable flag)
+ */
+export function getExportWorkerManager(workerConfig?: WorkerConfig): ExportWorkerManager {
+    // Recreate if config changed
+    if (_instance && workerConfig && JSON.stringify(workerConfig) !== JSON.stringify(_config)) {
+        _instance.dispose();
+        _instance = null;
+    }
+
     if (!_instance) {
-        _instance = new ExportWorkerManager();
+        _config = workerConfig;
+        _instance = new ExportWorkerManager(workerConfig);
     }
     return _instance;
 }
 
 /** Dispose the shared ExportWorkerManager singleton */
 export function disposeExportWorkerManager(): void {
-    _instance?.dispose();
-    _instance = null;
+    if (_instance) {
+        _instance.dispose();
+        _instance = null;
+        _config = undefined;
+    }
 }

@@ -22,6 +22,7 @@ import type { CanvasElement, Binding, Point } from '@/types';
 import { getElbowWorkerManager, disposeElbowWorkerManager } from '@/utils/elbowWorkerManager';
 import type { RouteParams } from '@/utils/elbowWorkerManager';
 import { computeElbowPoints, simplifyElbowPath } from '@/utils/elbow';
+import { useWorkerConfig } from '@/contexts/WorkerConfigContext';
 
 /**
  * Hook that computes elbow route points, offloading to a Web Worker
@@ -47,13 +48,16 @@ export function useElbowWorker(
 ): number[] | null {
     const [asyncResult, setAsyncResult] = useState<number[] | null>(null);
     const elementsRef = useRef<CanvasElement[]>(allElements);
+    const workerConfigCtx = useWorkerConfig();
+    const workerConfig = workerConfigCtx?.elbowWorkerConfig;
+
     elementsRef.current = allElements;
 
     // Keep Worker's element snapshot in sync
     useEffect(() => {
-        const mgr = getElbowWorkerManager();
+        const mgr = getElbowWorkerManager(workerConfig);
         mgr.updateElements(allElements);
-    }, [fingerprint]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [fingerprint, workerConfig]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Cleanup Worker on unmount
     useEffect(() => {
@@ -70,7 +74,7 @@ export function useElbowWorker(
             return;
         }
 
-        const mgr = getElbowWorkerManager();
+        const mgr = getElbowWorkerManager(workerConfig);
         let cancelled = false;
 
         const routeParams: RouteParams = {

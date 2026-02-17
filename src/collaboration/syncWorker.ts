@@ -34,6 +34,7 @@
 
 import type { CanvasElement } from '@/types';
 import type { CollaborationConfig, ConnectionStatus, AwarenessState } from './types';
+import { createWorker } from '@/utils/workerFactory';
 
 // ─── Protocol Types ───────────────────────────────────────────
 
@@ -89,11 +90,16 @@ export class SyncWorkerAdapter {
     connect(config: CollaborationConfig, syncDebounceMs: number): void {
         this.dispose();
 
-        // Create worker using Vite's worker import pattern
-        this._worker = new Worker(
-            new URL('./syncWorker.worker.ts', import.meta.url),
-            { type: 'module' },
+        // Create worker using factory (handles Vite inline, data: URL, etc.)
+        this._worker = createWorker(
+            () => new URL('./syncWorker.worker.ts', import.meta.url),
         );
+
+        if (!this._worker) {
+            console.warn('[SyncWorkerBridge] Worker creation failed, collaboration disabled');
+            this._callbacks.onStatus('disconnected');
+            return;
+        }
 
         this._worker.onmessage = (e: MessageEvent<WorkerOutMessage>) => {
             const msg = e.data;

@@ -122,6 +122,12 @@ export type { SpatialItem } from '../utils/spatialIndex';
 export { getElbowWorkerManager, disposeElbowWorkerManager } from '../utils/elbowWorkerManager';
 export type { RouteParams } from '../utils/elbowWorkerManager';
 
+// Worker factory and configuration (Next.js compatibility)
+export { createWorker, isWorkerSupported } from '../utils/workerFactory';
+export type { WorkerConfig } from '../utils/workerFactory';
+export { WorkerConfigContext, useWorkerConfig } from '../contexts/WorkerConfigContext';
+export type { WorkerConfigContextValue } from '../contexts/WorkerConfigContext';
+
 // Camera / viewport utilities
 export {
     zoomAtPoint,

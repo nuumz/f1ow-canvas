@@ -104,6 +104,46 @@ export interface FlowCanvasProps {
      * Pass a `CollaborationConfig` to connect, or `undefined`/`null` to disable.
      */
     collaboration?: CollaborationConfig | null;
+
+    // ─── Worker Configuration ─────────────────────────────────
+
+    /**
+     * Configure Web Workers for background processing (elbow routing, SVG export).
+     *
+     * **Why this is needed:**
+     * - f1ow-canvas uses Web Workers for performance-intensive operations
+     * - Vite bundles workers as separate files in `/assets/` directory
+     * - Next.js and other bundlers cannot resolve these paths automatically
+     *
+     * **Options:**
+     * 1. **Auto mode (default)**: Workers enabled in Vite, auto-fallback in Next.js
+     * 2. **Disabled mode**: Set `workerConfig.disabled = true` to force sync mode
+     * 3. **Custom URLs**: Provide worker file URLs for Next.js (see below)
+     *
+     * **For Next.js users:**
+     * Copy worker files from `node_modules/f1ow-canvas/dist/assets/` to your
+     * `public/workers/` directory, then configure:
+     *
+     * ```tsx
+     * <FlowCanvas
+     *   workerConfig={{
+     *     elbowWorkerUrl: '/workers/elbowWorker.js',
+     *     exportWorkerUrl: '/workers/exportWorker.js'
+     *   }}
+     * />
+     * ```
+     *
+     * If omitted or workers fail to load, f1ow-canvas automatically falls back
+     * to synchronous (main-thread) processing.
+     */
+    workerConfig?: {
+        /** Custom URL for elbow routing worker (Next.js users) */
+        elbowWorkerUrl?: string;
+        /** Custom URL for SVG export worker (Next.js users) */
+        exportWorkerUrl?: string;
+        /** Disable all workers (force sync mode) */
+        disabled?: boolean;
+    };
 }
 
 // ─── Theme ────────────────────────────────────────────────────

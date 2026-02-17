@@ -15,6 +15,7 @@
  */
 import type { CanvasElement, Binding, Point } from '@/types';
 import { computeElbowPoints, simplifyElbowPath } from '@/utils/elbow';
+import { createWorker, type WorkerConfig } from '@/utils/workerFactory';
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -83,6 +84,11 @@ export class ElbowWorkerManager {
     private pending = new Map<number, PendingRequest>();
     private cachedElements: CanvasElement[] = [];
     private workerSupported = true;
+    private workerConfig?: WorkerConfig;
+
+    constructor(workerConfig?: WorkerConfig) {
+        this.workerConfig = workerConfig;
+    }
 
     /**
      * Get or lazily create the Worker instance.
@@ -93,14 +99,23 @@ export class ElbowWorkerManager {
         if (this.worker) return this.worker;
 
         try {
-            this.worker = new Worker(
-                new URL('../workers/elbowWorker.ts', import.meta.url),
-                { type: 'module' },
+            this.worker = createWorker(
+                () => new URL('../workers/elbowWorker.ts', import.meta.url),
+                this.workerConfig,
             );
+
+            if (!this.worker) {
+                this.workerSupported = false;
+                return null;
+            }
+
             this.worker.onmessage = this.handleMessage;
             this.worker.onerror = () => {
                 this.workerSupported = false;
-                this.worker = null;
+                if (this.worker) {
+                    this.worker.terminate();
+                    this.worker = null;
+                }
                 for (const [, req] of this.pending) {
                     if (req.timerId !== undefined) clearTimeout(req.timerId);
                     req.reject(new Error('Worker failed'));
@@ -217,14 +232,24 @@ export class ElbowWorkerManager {
 // ─── Singleton ────────────────────────────────────────────────
 
 let _instance: ElbowWorkerManager | null = null;
+let _config: WorkerConfig | undefined;
 
 /**
  * Get or create the shared ElbowWorkerManager singleton.
  * The Worker is created lazily on first access.
+ *
+ * @param workerConfig - Optional worker configuration (URL or disable flag)
  */
-export function getElbowWorkerManager(): ElbowWorkerManager {
+export function getElbowWorkerManager(workerConfig?: WorkerConfig): ElbowWorkerManager {
+    // Recreate if config changed
+    if (_instance && workerConfig && JSON.stringify(workerConfig) !== JSON.stringify(_config)) {
+        _instance.dispose();
+        _instance = null;
+    }
+
     if (!_instance) {
-        _instance = new ElbowWorkerManager();
+        _config = workerConfig;
+        _instance = new ElbowWorkerManager(workerConfig);
     }
     return _instance;
 }
@@ -236,5 +261,6 @@ export function disposeElbowWorkerManager(): void {
     if (_instance) {
         _instance.dispose();
         _instance = null;
+        _config = undefined;
     }
 }

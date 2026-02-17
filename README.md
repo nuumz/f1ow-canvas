@@ -43,6 +43,25 @@ npm install f1ow
 
 > **Peer dependencies:** `react` and `react-dom` ≥ 17
 
+### Next.js / Non-Vite Bundlers
+
+f1ow-canvas uses Web Workers for performance-intensive operations. When using Next.js, Webpack, or other non-Vite bundlers, workers auto-fallback to synchronous mode. For optimal performance on large canvases, see the [Next.js Integration Guide](docs/NEXTJS_INTEGRATION.md).
+
+**TL;DR:**
+- **No config needed** — auto-fallback works out of the box
+- **For better performance** — copy worker files to `public/` and pass `workerConfig` prop
+
+```tsx
+<FlowCanvas
+  workerConfig={{
+    elbowWorkerUrl: '/workers/elbowWorker.js',
+    exportWorkerUrl: '/workers/exportWorker.js',
+  }}
+/>
+```
+
+See the [integration guide](docs/NEXTJS_INTEGRATION.md) for detailed setup instructions.
+
 ## Quick Start
 
 ```tsx
@@ -84,6 +103,7 @@ That's it — you get a full-featured canvas editor with toolbar, style panel, k
 | `contextMenuItems` | `ContextMenuItem[]` or `(ctx) => ContextMenuItem[]` | — | Extra context menu items |
 | `renderContextMenu` | `(ctx) => ReactNode` | — | Replace built-in context menu |
 | `collaboration` | `CollaborationConfig` | — | Enable real-time collaboration |
+| `workerConfig` | `{ elbowWorkerUrl?: string, exportWorkerUrl?: string, disabled?: boolean }` | — | Worker URLs for Next.js ([docs](docs/NEXTJS_INTEGRATION.md)) |
 
 ## Ref API
 

@@ -71,6 +71,7 @@ import type { FlowCanvasProps, FlowCanvasRef, ContextMenuContext } from './FlowC
 import { DEFAULT_THEME } from './FlowCanvasProps';
 import { useCollaboration } from '../collaboration/useCollaboration';
 import CursorOverlay from '../collaboration/CursorOverlay';
+import { WorkerConfigContext } from '../contexts/WorkerConfigContext';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -326,9 +327,24 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         contextMenuItems: contextMenuItemsProp,
         renderContextMenu,
         collaboration: collaborationConfig,
+        workerConfig,
     } = props;
 
     const theme = { ...DEFAULT_THEME, ...themeProp };
+
+    // ─── Worker Configuration ─────────────────────────────────
+    const workerConfigValue = useMemo(() => ({
+        elbowWorkerConfig: workerConfig?.disabled
+            ? { disabled: true }
+            : workerConfig?.elbowWorkerUrl
+                ? { url: workerConfig.elbowWorkerUrl }
+                : undefined,
+        exportWorkerConfig: workerConfig?.disabled
+            ? { disabled: true }
+            : workerConfig?.exportWorkerUrl
+                ? { url: workerConfig.exportWorkerUrl }
+                : undefined,
+    }), [workerConfig]);
 
     // ─── Store ────────────────────────────────────────────────
     const store = useCanvasStore();
@@ -2002,19 +2018,20 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
     // ─── Render ───────────────────────────────────────────────
     return (
-        <div
-            ref={containerRef}
-            className={className}
-            onContextMenu={handleContextMenu}
-            onMouseLeave={() => collabUpdateCursor(null)}
-            style={{
-                position: 'relative',
-                width,
-                height,
-                overflow: 'hidden',
-                background: theme.canvasBackground,
-            }}
-        >
+        <WorkerConfigContext.Provider value={workerConfigValue}>
+            <div
+                ref={containerRef}
+                className={className}
+                onContextMenu={handleContextMenu}
+                onMouseLeave={() => collabUpdateCursor(null)}
+                style={{
+                    position: 'relative',
+                    width,
+                    height,
+                    overflow: 'hidden',
+                    background: theme.canvasBackground,
+                }}
+            >
             {/* Toolbar */}
             {showToolbar && !readOnly && (
                 <Toolbar visibleTools={visibleTools} theme={theme} />
@@ -2218,6 +2235,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             {/* Status Bar */}
             {showStatusBar && <StatusBar theme={theme} />}
         </div>
+        </WorkerConfigContext.Provider>
     );
 });
 
