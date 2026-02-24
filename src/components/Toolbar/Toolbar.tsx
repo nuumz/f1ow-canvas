@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
     Hand, MousePointer2, Square, Circle, Diamond,
@@ -38,6 +38,7 @@ const ICON_MAP: Record<string, React.ReactNode> = {
 interface Props {
     visibleTools: ToolConfig[];
     theme: FlowCanvasTheme;
+    position?: 'top' | 'bottom';
 }
 
 interface SubToolAction {
@@ -92,86 +93,180 @@ const mkBarStyle = (theme: FlowCanvasTheme): React.CSSProperties => ({
     border: `1px solid ${theme.toolbarBorder}`,
 });
 
-// ─── Sub-tools popup (grid) ───────────────────────────────────
-const SubToolsPopup: React.FC<{
-    actions: SubToolAction[];
-    anchorRef: React.RefObject<HTMLButtonElement | null>;
-    onClose: () => void;
-    theme: FlowCanvasTheme;
-}> = ({ actions, anchorRef, onClose, theme }) => {
+// ─── useAnchoredPos — live-recalculate portal position on resize/scroll ──────
+function useAnchoredPos(
+    anchorRef: React.RefObject<Element | null>,
+    compute: (rect: DOMRect) => { top: number; left: number },
+    enabled: boolean,
+): { top: number; left: number } | null {
     const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+    const computeRef = useRef(compute);
+    computeRef.current = compute;
 
-    useEffect(() => {
+    const recalc = useCallback(() => {
         if (anchorRef.current) {
-            const r = anchorRef.current.getBoundingClientRect();
-            setPos({ top: r.top - 12, left: r.left + r.width / 2 });
+            setPos(computeRef.current(anchorRef.current.getBoundingClientRect()));
         }
     }, [anchorRef]);
 
     useEffect(() => {
-        const handle = (e: MouseEvent) => {
-            if (!(e.target as Element).closest('[data-subtools-popup]')) onClose();
+        if (!enabled) { setPos(null); return; }
+        recalc();
+        window.addEventListener('resize', recalc);
+        window.addEventListener('scroll', recalc, true);
+        return () => {
+            window.removeEventListener('resize', recalc);
+            window.removeEventListener('scroll', recalc, true);
         };
-        document.addEventListener('mousedown', handle);
-        return () => document.removeEventListener('mousedown', handle);
-    }, [onClose]);
+    }, [enabled, recalc]);
 
-    if (!pos) return null;
+    return pos;
+}
+
+// ─── Shared Popup Component ───────────────────────────────────
+const ToolbarPopup: React.FC<{
+    anchorRef: React.RefObject<HTMLElement | null>;
+    onClose: () => void;
+    theme: FlowCanvasTheme;
+    placement: 'top' | 'bottom';
+    computePos: (rect: DOMRect, placement: 'top' | 'bottom') => { top: number; left: number };
+    transform: string;
+    dataAttribute: string;
+    style?: React.CSSProperties;
+    children: React.ReactNode;
+    isOpen: boolean;
+}> = ({ anchorRef, onClose, theme, placement, computePos, transform, dataAttribute, style, children, isOpen }) => {
+    const pos = useAnchoredPos(anchorRef, (r) => computePos(r, placement), isOpen);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handle = (e: MouseEvent) => {
+            if (anchorRef.current && anchorRef.current.contains(e.target as Node)) return;
+            if (!(e.target as Element).closest(`[${dataAttribute}]`)) onClose();
+        };
+        const handleResize = () => onClose();
+        document.addEventListener('mousedown', handle);
+        window.addEventListener('resize', handleResize);
+        return () => {
+            document.removeEventListener('mousedown', handle);
+            window.removeEventListener('resize', handleResize);
+        };
+    }, [isOpen, onClose, dataAttribute, anchorRef]);
+
+    if (!isOpen || !pos) return null;
 
     return createPortal(
         <div
-            data-subtools-popup="true"
+            {...{ [dataAttribute]: "true" }}
             style={{
                 position: 'fixed',
                 top: pos.top,
                 left: pos.left,
-                transform: 'translate(-50%, -100%)',
+                transform,
                 background: theme.toolbarBg,
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
                 border: `1px solid ${theme.toolbarBorder}`,
                 borderRadius: 12,
                 boxShadow: '0 8px 28px rgba(0,0,0,0.12)',
+                zIndex: 9999,
+                ...style,
+            }}
+        >
+            {children}
+        </div>,
+        document.body
+    );
+};
+
+// ─── Shared Popup Icon Button ─────────────────────────────────
+const PopupIconButton: React.FC<{
+    icon: React.ReactNode;
+    label: string;
+    disabled?: boolean;
+    isActive?: boolean;
+    onClick: () => void;
+    theme: FlowCanvasTheme;
+    size?: number;
+}> = ({ icon, label, disabled, isActive, onClick, theme, size = 36 }) => {
+    return (
+        <button
+            title={label}
+            disabled={disabled}
+            onClick={disabled ? undefined : onClick}
+            style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: size, height: size, borderRadius: 8,
+                border: `1px solid ${isActive ? `${theme.activeToolColor}50` : 'transparent'}`,
+                background: isActive ? `${theme.activeToolColor}18` : 'transparent',
+                cursor: disabled ? 'default' : 'pointer',
+                color: isActive
+                    ? theme.activeToolColor
+                    : disabled
+                        ? `${theme.mutedTextColor}55`
+                        : theme.mutedTextColor,
+                opacity: disabled ? 0.4 : 1,
+                transition: 'background 120ms, color 120ms, border-color 120ms',
+            }}
+            onMouseEnter={(e) => {
+                if (!disabled && !isActive) {
+                    e.currentTarget.style.background = `${theme.activeToolColor}14`;
+                    e.currentTarget.style.color = theme.activeToolColor;
+                    e.currentTarget.style.borderColor = `${theme.activeToolColor}30`;
+                }
+            }}
+            onMouseLeave={(e) => {
+                if (!isActive) {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.color = disabled ? `${theme.mutedTextColor}55` : theme.mutedTextColor;
+                    e.currentTarget.style.borderColor = 'transparent';
+                }
+            }}
+        >
+            {icon}
+        </button>
+    );
+};
+
+// ─── Sub-tools popup (grid) ───────────────────────────────────
+const SubToolsPopup: React.FC<{
+    actions: SubToolAction[];
+    anchorRef: React.RefObject<HTMLButtonElement | null>;
+    onClose: () => void;
+    theme: FlowCanvasTheme;
+    placement?: 'top' | 'bottom';
+}> = ({ actions, anchorRef, onClose, theme, placement = 'bottom' }) => {
+    return (
+        <ToolbarPopup
+            isOpen={true}
+            anchorRef={anchorRef}
+            onClose={onClose}
+            theme={theme}
+            placement={placement}
+            computePos={(r, p) => p === 'top'
+                ? { top: r.bottom + 8, left: r.left + r.width / 2 }
+                : { top: r.top - 12, left: r.left + r.width / 2 }
+            }
+            transform={placement === 'top' ? 'translate(-50%, 0)' : 'translate(-50%, -100%)'}
+            dataAttribute="data-subtools-popup"
+            style={{
                 padding: 8,
                 display: 'grid',
                 gridTemplateColumns: 'repeat(4, 36px)',
                 gap: 4,
-                zIndex: 9999,
             }}
         >
             {actions.map((action, i) => (
-                <button
+                <PopupIconButton
                     key={i}
-                    title={action.label}
+                    icon={action.icon}
+                    label={action.label}
                     disabled={action.disabled}
-                    onClick={() => { if (!action.disabled) { action.onClick(); onClose(); } }}
-                    style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        width: 36, height: 36, borderRadius: 8,
-                        border: '1px solid transparent', background: 'transparent',
-                        cursor: action.disabled ? 'not-allowed' : 'pointer',
-                        color: action.disabled ? `${theme.mutedTextColor}55` : theme.mutedTextColor,
-                        opacity: action.disabled ? 0.4 : 1,
-                        transition: 'background 120ms, color 120ms, border-color 120ms',
-                    }}
-                    onMouseEnter={(e) => {
-                        if (!action.disabled) {
-                            e.currentTarget.style.background = `${theme.activeToolColor}14`;
-                            e.currentTarget.style.color = theme.activeToolColor;
-                            e.currentTarget.style.borderColor = `${theme.activeToolColor}30`;
-                        }
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                        e.currentTarget.style.color = action.disabled ? `${theme.mutedTextColor}55` : theme.mutedTextColor;
-                        e.currentTarget.style.borderColor = 'transparent';
-                    }}
-                >
-                    {action.icon}
-                </button>
+                    onClick={() => { action.onClick(); onClose(); }}
+                    theme={theme}
+                />
             ))}
-        </div>,
-        document.body,
+        </ToolbarPopup>
     );
 };
 
@@ -183,97 +278,46 @@ const ShapePickerPopup: React.FC<{
     onSelect: (tool: ToolType) => void;
     onClose: () => void;
     theme: FlowCanvasTheme;
-}> = ({ shapes, activeTool, anchorRef, onSelect, onClose, theme }) => {
-    const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-
-    useEffect(() => {
-        if (anchorRef.current) {
-            const r = anchorRef.current.getBoundingClientRect();
-            // Popup anchors to right edge of ^ button, extends leftward
-            setPos({ top: r.top - 12, left: r.right });
-        }
-    }, [anchorRef]);
-
-    useEffect(() => {
-        const handle = (e: MouseEvent) => {
-            if (!(e.target as Element).closest('[data-shape-picker]')) onClose();
-        };
-        document.addEventListener('mousedown', handle);
-        return () => document.removeEventListener('mousedown', handle);
-    }, [onClose]);
-
-    if (!pos) return null;
-
-    return createPortal(
-        <div
-            data-shape-picker="true"
+    placement?: 'top' | 'bottom';
+}> = ({ shapes, activeTool, anchorRef, onSelect, onClose, theme, placement = 'bottom' }) => {
+    return (
+        <ToolbarPopup
+            isOpen={true}
+            anchorRef={anchorRef}
+            onClose={onClose}
+            theme={theme}
+            placement={placement}
+            computePos={(r, p) => p === 'top'
+                ? { top: r.bottom + 8, left: r.right }
+                : { top: r.top - 12, left: r.right }
+            }
+            transform={placement === 'top' ? 'translate(-100%, 0)' : 'translate(-100%, -100%)'}
+            dataAttribute="data-shape-picker"
             style={{
-                position: 'fixed',
-                top: pos.top,
-                left: pos.left,
-                transform: 'translate(-100%, -100%)',
-                background: theme.toolbarBg,
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                border: `1px solid ${theme.toolbarBorder}`,
-                borderRadius: 12,
-                boxShadow: '0 8px 28px rgba(0,0,0,0.12)',
                 padding: 8,
                 display: 'grid',
                 gridTemplateColumns: 'repeat(5, 40px)',
                 gap: 4,
-                zIndex: 9999,
             }}
         >
-            {shapes.filter(s => s.tool !== null).map((shape, i) => {
-                const isActive = shape.tool !== null && activeTool === shape.tool;
-                const isDisabled = shape.tool === null;
-                return (
-                    <button
-                        key={i}
-                        title={shape.label}
-                        disabled={isDisabled}
-                        onClick={() => {
-                            if (shape.tool) {
-                                onSelect(shape.tool);
-                                onClose();
-                            }
-                        }}
-                        style={{
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            width: 40, height: 40, borderRadius: 8,
-                            border: `1px solid ${isActive ? `${theme.activeToolColor}50` : 'transparent'}`,
-                            background: isActive ? `${theme.activeToolColor}18` : 'transparent',
-                            cursor: isDisabled ? 'default' : 'pointer',
-                            color: isActive
-                                ? theme.activeToolColor
-                                : isDisabled
-                                    ? `${theme.mutedTextColor}33`
-                                    : theme.mutedTextColor,
-                            opacity: isDisabled ? 0.35 : 1,
-                            transition: 'background 120ms, color 120ms, border-color 120ms',
-                        }}
-                        onMouseEnter={(e) => {
-                            if (!isDisabled && !isActive) {
-                                e.currentTarget.style.background = `${theme.activeToolColor}14`;
-                                e.currentTarget.style.color = theme.activeToolColor;
-                                e.currentTarget.style.borderColor = `${theme.activeToolColor}30`;
-                            }
-                        }}
-                        onMouseLeave={(e) => {
-                            if (!isActive) {
-                                e.currentTarget.style.background = 'transparent';
-                                e.currentTarget.style.color = isDisabled ? `${theme.mutedTextColor}33` : theme.mutedTextColor;
-                                e.currentTarget.style.borderColor = 'transparent';
-                            }
-                        }}
-                    >
-                        {shape.icon}
-                    </button>
-                );
-            })}
-        </div>,
-        document.body,
+            {shapes.filter(s => s.tool !== null).map((shape, i) => (
+                <PopupIconButton
+                    key={i}
+                    icon={shape.icon}
+                    label={shape.label}
+                    disabled={shape.tool === null}
+                    isActive={shape.tool !== null && activeTool === shape.tool}
+                    onClick={() => {
+                        if (shape.tool) {
+                            onSelect(shape.tool);
+                            onClose();
+                        }
+                    }}
+                    theme={theme}
+                    size={40}
+                />
+            ))}
+        </ToolbarPopup>
     );
 };
 
@@ -281,25 +325,10 @@ const ShapePickerPopup: React.FC<{
 const ZoomPicker: React.FC<{
     scale: number; theme: FlowCanvasTheme;
     onZoomIn: () => void; onZoomOut: () => void; onReset: () => void;
-}> = ({ scale, theme, onZoomIn, onZoomOut, onReset }) => {
+    placement?: 'top' | 'bottom';
+}> = ({ scale, theme, onZoomIn, onZoomOut, onReset, placement = 'bottom' }) => {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
-    const [dropPos, setDropPos] = useState<{ top: number; left: number } | null>(null);
-
-    useEffect(() => {
-        if (!open) return;
-        if (ref.current) {
-            const r = ref.current.getBoundingClientRect();
-            // Toolbar is at bottom — open dropdown upward
-            setDropPos({ top: r.top - 6, left: r.left });
-        }
-        const handle = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node) &&
-                !(e.target as Element).closest('[data-zoom-dropdown]')) setOpen(false);
-        };
-        document.addEventListener('mousedown', handle);
-        return () => document.removeEventListener('mousedown', handle);
-    }, [open]);
 
     return (
         <div ref={ref} style={{ position: 'relative' }}>
@@ -313,44 +342,47 @@ const ZoomPicker: React.FC<{
                 </span>
                 <ChevronDown size={12} />
             </button>
-            {open && dropPos && createPortal(
-                <div
-                    data-zoom-dropdown="true"
-                    style={{
-                        position: 'fixed', top: dropPos.top, left: dropPos.left,
-                        transform: 'translateY(-100%)',
-                        background: theme.toolbarBg, border: `1px solid ${theme.toolbarBorder}`,
-                        borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-                        padding: 4, zIndex: 9999, minWidth: 130,
-                    }}
-                >
-                    {[
-                        { icon: <ZoomIn size={14} />, label: 'Zoom In', fn: () => { onZoomIn(); setOpen(false); } },
-                        { icon: <ZoomOut size={14} />, label: 'Zoom Out', fn: () => { onZoomOut(); setOpen(false); } },
-                        { icon: <Maximize size={14} />, label: 'Reset Zoom', fn: () => { onReset(); setOpen(false); } },
-                    ].map(({ icon, label, fn }) => (
-                        <button key={label} onClick={fn}
-                            style={{
-                                display: 'flex', alignItems: 'center', gap: 8,
-                                width: '100%', padding: '6px 8px', border: 'none',
-                                background: 'transparent', color: theme.textColor,
-                                cursor: 'pointer', borderRadius: 4, fontSize: 12,
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.activeToolColor}14`; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                        >
-                            {icon}<span>{label}</span>
-                        </button>
-                    ))}
-                </div>,
-                document.body,
-            )}
+            <ToolbarPopup
+                isOpen={open}
+                anchorRef={ref}
+                onClose={() => setOpen(false)}
+                theme={theme}
+                placement={placement}
+                computePos={(r, p) => p === 'top'
+                    ? { top: r.bottom + 6, left: r.left }
+                    : { top: r.top - 6, left: r.left }
+                }
+                transform={placement === 'top' ? 'translateY(0)' : 'translateY(-100%)'}
+                dataAttribute="data-zoom-dropdown"
+                style={{
+                    padding: 4, minWidth: 130,
+                }}
+            >
+                {[
+                    { icon: <ZoomIn size={14} />, label: 'Zoom In', fn: () => { onZoomIn(); setOpen(false); } },
+                    { icon: <ZoomOut size={14} />, label: 'Zoom Out', fn: () => { onZoomOut(); setOpen(false); } },
+                    { icon: <Maximize size={14} />, label: 'Reset Zoom', fn: () => { onReset(); setOpen(false); } },
+                ].map(({ icon, label, fn }) => (
+                    <button key={label} onClick={fn}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            width: '100%', padding: '6px 8px', border: 'none',
+                            background: 'transparent', color: theme.textColor,
+                            cursor: 'pointer', borderRadius: 4, fontSize: 12,
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.activeToolColor}14`; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                        {icon}<span>{label}</span>
+                    </button>
+                ))}
+            </ToolbarPopup>
         </div>
     );
 };
 
 // ─── Main Toolbar ─────────────────────────────────────────────
-const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
+const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) => {
     const activeTool         = useCanvasStore((s) => s.activeTool);
     const setActiveTool      = useCanvasStore((s) => s.setActiveTool);
     const undo               = useCanvasStore((s) => s.undo);
@@ -444,21 +476,38 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
         return true;
     });
 
+    const isTop = position === 'top';
+
+    // Two-layer wrapper pattern:
+    // Outer: full-width anchor — NO transform (avoids CSS overflow:hidden + transform clipping quirk)
+    // Inner: actual toolbar content, centered via flexbox
     return (
         <div style={{
             position: 'absolute',
-            bottom: 16,
-            left: '50%',
-            transform: 'translateX(-50%)',
+            ...(isTop ? { top: 16 } : { bottom: 16 }),
+            left: 0,
+            right: 0,
             zIndex: 50,
             display: 'flex',
-            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: isTop ? 'flex-start' : 'flex-end',
+            pointerEvents: 'none',
+        }}>
+        <div style={{
+            display: 'flex',
+            flexDirection: isTop ? 'column-reverse' : 'column',
             alignItems: 'center',
+            maxWidth: 'calc(100% - 32px)',
             gap: 0,
             pointerEvents: 'none',
         }}>
             {/* ── Action strip ── */}
-            <div style={{ ...mkBarStyle(theme), pointerEvents: 'auto', borderRadius: '12px 12px 0 0', borderBottom: 'none' }}>
+            {/* bottom: visually on top of main tools → rounded top, no bottom border */}
+            {/* top:    visually below main tools  → rounded bottom, no top border   */}
+            <div style={{ ...mkBarStyle(theme), pointerEvents: 'auto', ...(isTop
+                ? { borderRadius: '0 0 12px 12px', borderTop: 'none' }
+                : { borderRadius: '12px 12px 0 0', borderBottom: 'none' }
+            ) }}>
                 <button style={mkBtnStyle(false, theme)} onClick={undo} title="Undo (⌘Z)">
                     <Undo2 size={16} />
                 </button>
@@ -494,7 +543,12 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
             </div>
 
             {/* ── Main tools bar ── */}
-            <div style={{ ...mkBarStyle(theme), pointerEvents: 'auto' }}>
+            {/* bottom: fully rounded (sits below action strip) */}
+            {/* top:    visually on top → rounded top, no bottom border */}
+            <div style={{ ...mkBarStyle(theme), pointerEvents: 'auto', ...(isTop
+                ? { borderRadius: '12px 12px 0 0', borderBottom: 'none' }
+                : {}
+            ) }}>
                 {visibleTools.map((tool) => (
                     <button
                         key={tool.type}
@@ -506,7 +560,7 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
                     </button>
                 ))}
                 <div style={mkSepStyle(theme)} />
-                <ZoomPicker scale={scale} theme={theme} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} />
+                <ZoomPicker scale={scale} theme={theme} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} placement={position} />
                 {filteredShapes.length > 0 && (
                     <>
                         <div style={mkSepStyle(theme)} />
@@ -533,6 +587,7 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
                     anchorRef={moreRef}
                     onClose={() => setShowMoreTools(false)}
                     theme={theme}
+                    placement={position}
                 />
             )}
 
@@ -545,8 +600,10 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme }) => {
                     onSelect={handleToolSelect}
                     onClose={() => setShowShapePicker(false)}
                     theme={theme}
+                    placement={position}
                 />
             )}
+        </div>
         </div>
     );
 };

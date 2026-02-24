@@ -317,6 +317,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         tools,
         defaultStyle,
         showToolbar = true,
+        toolbarPosition = 'bottom',
+        defaultTool,
         showStylePanel: showStylePanelProp = true,
         showStatusBar = true,
         showGrid: showGridProp = false,
@@ -602,6 +604,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     useEffect(() => {
         if (showGridProp !== showGrid) {
             toggleGrid();
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ─── Default tool on mount ────────────────────────────────
+    useEffect(() => {
+        if (defaultTool) {
+            setActiveTool(defaultTool);
         }
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2033,15 +2042,15 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 }}
             >
             {/* Toolbar */}
-            {showToolbar && !readOnly && (
-                <Toolbar visibleTools={visibleTools} theme={theme} />
+            {showToolbar && !readOnly && toolbarPosition !== 'hidden' && (
+                <Toolbar visibleTools={visibleTools} theme={theme} position={toolbarPosition} />
             )}
 
             {/* Style Panel */}
             {showStylePanelComputed && <StylePanel theme={theme} />}
 
             {/* Canvas */}
-            <div style={{ cursor: getCursor(), width: '100%', height: '100%' }}>
+            <div style={{ cursor: getCursor(), position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
                 <Stage
                     ref={stageRef}
                     width={dimensions.width}

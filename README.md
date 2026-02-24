@@ -18,38 +18,41 @@
 
 ---
 
-## Features
+## ✨ Features
 
-- **10 Drawing Tools** — Rectangle, Ellipse, Diamond, Line, Arrow, Free Draw, Text, Image, Eraser
-- **Selection & Transform** — Click, drag, resize, rotate, multi-select
-- **Smart Connectors** — Arrows/lines snap to shapes with auto-routing (sharp, curved, elbow)
-- **11 Arrowhead Variants** — Triangle, circle, diamond, bar, crow's foot (ERD), and more
-- **Pan & Zoom** — Hand tool, scroll-wheel, trackpad pinch, zoom-to-fit
-- **Undo / Redo** — 100-step history
-- **Rich Styling** — Stroke, fill, width, dash, opacity, roughness, fonts
-- **Export** — PNG, SVG, JSON
-- **Context Menu** — Built-in + extensible
-- **Grouping & Locking** — Group/ungroup, lock/unlock
-- **Real-Time Collaboration** — Optional CRDT via Yjs (experimental)
-- **Fully Themeable** — Dark mode, custom colors, all via props
-- **Zero CSS** — No external stylesheets required
-- **TypeScript** — Full type safety with strict mode
+- **10 Drawing Tools** — Rectangle, Ellipse, Diamond, Line, Arrow, Free Draw, Text, Image, Eraser.
+- **Smart Connectors** — Arrows and lines snap to shapes with auto-routing (sharp, curved, elbow).
+- **11 Arrowhead Variants** — Triangle, circle, diamond, bar, crow's foot (ERD), and more.
+- **Selection & Transform** — Click, drag, resize, rotate, multi-select, group/ungroup, lock/unlock.
+- **Pan & Zoom** — Hand tool, scroll-wheel, trackpad pinch, zoom-to-fit, zoom-to-selection.
+- **Rich Styling** — Stroke, fill, width, dash, opacity, roughness, fonts.
+- **Customizable UI** — Floating toolbar (top/bottom/hidden), style panel, context menu.
+- **Undo / Redo** — 100-step history snapshot system.
+- **Export** — Export canvas to PNG, SVG, or JSON.
+- **Real-Time Collaboration** — Optional CRDT via Yjs (experimental) with cursor presence.
+- **Fully Themeable** — Dark mode, custom colors, all via props.
+- **Zero CSS Dependencies** — No external stylesheets required. Inline styled.
+- **TypeScript** — Full type safety with strict mode.
 
-## Installation
+## 📦 Installation
 
 ```bash
 npm install f1ow
+# or
+pnpm add f1ow
+# or
+yarn add f1ow
 ```
 
-> **Peer dependencies:** `react` and `react-dom` ≥ 17
+> **Peer dependencies:** `react` (≥17), `react-dom` (≥17), `konva` (≥9), `react-konva` (≥18), `zustand` (≥5)
 
 ### Next.js / Non-Vite Bundlers
 
 f1ow-canvas uses Web Workers for performance-intensive operations. When using Next.js, Webpack, or other non-Vite bundlers, workers auto-fallback to synchronous mode. For optimal performance on large canvases, see the [Next.js Integration Guide](docs/NEXTJS_INTEGRATION.md).
 
 **TL;DR:**
-- **No config needed** — auto-fallback works out of the box
-- **For better performance** — copy worker files to `public/` and pass `workerConfig` prop
+- **No config needed** — auto-fallback works out of the box.
+- **For better performance** — copy worker files to `public/` and pass `workerConfig` prop.
 
 ```tsx
 <FlowCanvas
@@ -62,7 +65,7 @@ f1ow-canvas uses Web Workers for performance-intensive operations. When using Ne
 
 See the [integration guide](docs/NEXTJS_INTEGRATION.md) for detailed setup instructions.
 
-## Quick Start
+## 🚀 Quick Start
 
 ```tsx
 import { FlowCanvas } from "f1ow";
@@ -70,15 +73,18 @@ import { FlowCanvas } from "f1ow";
 function App() {
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
-      <FlowCanvas onChange={(elements) => console.log(elements)} />
+      <FlowCanvas 
+        onChange={(elements) => console.log('Canvas updated:', elements)} 
+        toolbarPosition="bottom"
+      />
     </div>
   );
 }
 ```
 
-That's it — you get a full-featured canvas editor with toolbar, style panel, keyboard shortcuts, and grid out of the box.
+That's it — you get a full-featured canvas editor with a toolbar, style panel, keyboard shortcuts, and grid out of the box.
 
-## Props
+## ⚙️ Props
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -91,8 +97,9 @@ That's it — you get a full-featured canvas editor with toolbar, style panel, k
 | `onElementDoubleClick` | `(id, element) => boolean` | — | Return `true` to prevent default |
 | `width` / `height` | `number \| string` | `'100%'` | Canvas dimensions |
 | `tools` | `ToolType[]` | all | Visible tools in toolbar |
-| `defaultStyle` | `Partial<ElementStyle>` | — | Default style for new elements |
-| `showToolbar` | `boolean` | `true` | Show toolbar |
+| `defaultTool` | `ToolType` | `'select'` | Default active tool on mount |
+| `toolbarPosition` | `'top' \| 'bottom' \| 'hidden'` | `'bottom'` | Position of the main toolbar |
+| `showToolbar` | `boolean` | `true` | Show toolbar (legacy, use `toolbarPosition`) |
 | `showStylePanel` | `boolean` | `true` | Show style panel |
 | `showStatusBar` | `boolean` | `true` | Show status bar |
 | `showGrid` | `boolean` | `true` | Show grid |
@@ -105,7 +112,7 @@ That's it — you get a full-featured canvas editor with toolbar, style panel, k
 | `collaboration` | `CollaborationConfig` | — | Enable real-time collaboration |
 | `workerConfig` | `{ elbowWorkerUrl?: string, exportWorkerUrl?: string, disabled?: boolean }` | — | Worker URLs for Next.js ([docs](docs/NEXTJS_INTEGRATION.md)) |
 
-## Ref API
+## 🕹️ Ref API
 
 Control the canvas programmatically via `ref`:
 
@@ -139,7 +146,7 @@ const ref = useRef<FlowCanvasRef>(null);
 | `importJSON(json)` | — | Load from JSON |
 | `getStage()` | `Konva.Stage` | Raw Konva stage access |
 
-## Keyboard Shortcuts
+## ⌨️ Keyboard Shortcuts
 
 `⌘` = Cmd (Mac) / Ctrl (Windows/Linux)
 
@@ -152,7 +159,7 @@ const ref = useRef<FlowCanvasRef>(null);
 | `D` Diamond | `E` Eraser | `Del` Delete | `⌘⇧L` Lock toggle |
 | `L` Line | `G` Grid | `⌘+/-/0` Zoom | `⌘]/[` Layer order |
 
-## Theming
+## 🎨 Theming
 
 ```tsx
 <FlowCanvas
@@ -172,7 +179,7 @@ const ref = useRef<FlowCanvasRef>(null);
 
 All properties are optional — only override what you need.
 
-## Context Menu
+## 🖱️ Context Menu
 
 Append custom items or fully replace the built-in menu:
 
@@ -190,7 +197,7 @@ Append custom items or fully replace the built-in menu:
 />
 ```
 
-## Collaboration (Experimental)
+## 🤝 Collaboration (Experimental)
 
 ```tsx
 <FlowCanvas
@@ -204,19 +211,19 @@ Append custom items or fully replace the built-in menu:
 
 Provides CRDT-based real-time sync with cursor presence overlay. Requires a [Yjs WebSocket server](https://github.com/yjs/y-websocket).
 
-## Element Types
+## 🧩 Element Types
 
 `CanvasElement` is a discriminated union of 8 types:
 
-**Shapes** — `rectangle`, `ellipse`, `diamond`
-**Connectors** — `line`, `arrow` (with bindings, routing, arrowheads)
-**Content** — `text`, `image`, `freedraw`
+- **Shapes** — `rectangle`, `ellipse`, `diamond`
+- **Connectors** — `line`, `arrow` (with bindings, routing, arrowheads)
+- **Content** — `text`, `image`, `freedraw`
 
 All elements share: `id`, `x`, `y`, `width`, `height`, `rotation`, `style`, `isLocked`, `isVisible`, `boundElements`, `groupIds`.
 
 > Full type definitions are bundled in the package `.d.ts` files.
 
-## Development
+## 🛠️ Development
 
 ```bash
 pnpm install       # Install dependencies
@@ -225,10 +232,10 @@ pnpm build:lib     # Build library → dist/
 pnpm typecheck     # Type check (strict)
 ```
 
-## Browser Support
+## 🌐 Browser Support
 
 Chrome/Edge ≥ 80 · Firefox ≥ 78 · Safari ≥ 14
 
-## License
+## 📄 License
 
 [MIT](LICENSE) © [Nuumz](https://github.com/nuumz)

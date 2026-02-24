@@ -61,6 +61,17 @@ export interface FlowCanvasProps {
     /** Show/hide the toolbar */
     showToolbar?: boolean;
 
+    /**
+     * Position of the toolbar:
+     * - `'bottom'` — floating at the bottom center, like tldraw (default)
+     * - `'top'`    — floating at the top center, like Excalidraw
+     * - `'hidden'` — toolbar is not rendered (same as `showToolbar={false}`)
+     */
+    toolbarPosition?: 'top' | 'bottom' | 'hidden';
+
+    /** Default active tool when the canvas mounts (default: 'select') */
+    defaultTool?: ToolType;
+
     /** Show/hide the style panel */
     showStylePanel?: boolean;
 
