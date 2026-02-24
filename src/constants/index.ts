@@ -14,27 +14,31 @@ export const DEFAULT_STYLE: ElementStyle = {
 
 // ─── Color Palette ────────────────────────────────────────────
 export const STROKE_COLORS = [
-    '#1e1e1e',
-    '#e03131',
-    '#2f9e44',
-    '#1971c2',
-    '#f08c00',
-    '#6741d9',
-    '#c2255c',
-    '#0c8599',
-    '#868e96',
+    '#1a1a1a', // black
+    '#868e96', // gray
+    '#b197fc', // lavender
+    '#7048e8', // purple
+    '#4263eb', // blue
+    '#f59f00', // amber
+    '#e8590c', // orange
+    '#2f9e44', // dark green
+    '#40c057', // green
+    '#f06595', // pink
+    '#e03131', // red
 ];
 
 export const FILL_COLORS = [
-    'transparent',
-    '#ffc9c9',
-    '#b2f2bb',
-    '#a5d8ff',
-    '#ffec99',
-    '#d0bfff',
-    '#fcc2d7',
-    '#99e9f2',
-    '#e9ecef',
+    'transparent', // ← black pair (no fill)
+    '#e9ecef',     // ← gray
+    '#f3f0ff',     // ← lavender
+    '#e5dbff',     // ← purple
+    '#edf2ff',     // ← blue
+    '#fff3bf',     // ← amber
+    '#ffe8cc',     // ← orange
+    '#d3f9d8',     // ← dark green
+    '#ebfbee',     // ← green
+    '#fcc2d7',     // ← pink
+    '#ffe3e3',     // ← red
 ];
 
 // ─── Stroke Widths ────────────────────────────────────────────

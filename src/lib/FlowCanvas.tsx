@@ -2014,7 +2014,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // capture events — clicks/drags go straight to the Stage, exactly
     // standard canvas editor behavior.
     // Also disable when space-panning so shapes don't intercept drags.
-    const elementsListening = !isSpacePanning && ['select', 'hand', 'eraser', 'image'].includes(activeTool);
+    const elementsListening = !isSpacePanning && ['select', 'eraser', 'image'].includes(activeTool);
 
     // ─── Render ───────────────────────────────────────────────
     return (
