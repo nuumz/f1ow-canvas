@@ -63,6 +63,10 @@ export const linearTool: ToolHandler = {
 
         ctx.startBindingRef.current = startBind;
 
+        // Pause history so addElement does NOT push an intermediate snapshot
+        // with points:[0,0,0,0]. A single clean entry is pushed in onMouseUp.
+        useCanvasStore.getState().pauseHistory();
+
         const base = {
             id,
             x: startPt.x,
@@ -183,6 +187,9 @@ export const linearTool: ToolHandler = {
 
             // Delete degenerate (zero-length) lines
             if (segLen < 2) {
+                // Resume before deleteElements (its internal pushHistory will find
+                // no diff since the element was added while history was paused).
+                useCanvasStore.getState().resumeHistory();
                 ctx.deleteElements([ctx.currentElementIdRef.current]);
                 ctx.currentElementIdRef.current = null;
                 ctx.startBindingRef.current = null;
@@ -245,12 +252,16 @@ export const linearTool: ToolHandler = {
                 ctx.setSnapTarget(null);
 
                 ctx.setSelectedIds([ctx.currentElementIdRef.current!]);
+                // Resume history then push one single atomic entry for the whole draw.
+                useCanvasStore.getState().resumeHistory();
                 ctx.pushHistory();
             }
         }
 
         _lastRawEndPos = null;
         _lastSnapIsPrecise = undefined;
+        // Safety: ensure history is never left paused (e.g. if el was not found).
+        useCanvasStore.getState().resumeHistory();
         ctx.setIsDrawing(false);
         ctx.setDrawStart(null);
         ctx.currentElementIdRef.current = null;

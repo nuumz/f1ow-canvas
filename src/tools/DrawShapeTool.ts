@@ -8,6 +8,7 @@ import type Konva from 'konva';
 import type { Point, CanvasElement } from '@/types';
 import { normalizeRect, normalizeSymmetricRect } from '@/utils/geometry';
 import { generateId } from '@/utils/id';
+import { useCanvasStore } from '@/store/useCanvasStore';
 
 export const drawShapeTool: ToolHandler = {
     name: 'rectangle', // also handles ellipse and diamond
@@ -36,6 +37,8 @@ export const drawShapeTool: ToolHandler = {
         const el: CanvasElement = ctx.activeTool === 'rectangle'
             ? { ...baseShape, type: 'rectangle', cornerRadius: 0 }
             : baseShape as CanvasElement;
+        // Pause before addElement so no intermediate snapshot is recorded.
+        useCanvasStore.getState().pauseHistory();
         ctx.addElement(el);
         ctx.onElementCreate?.(el);
     },
@@ -50,6 +53,8 @@ export const drawShapeTool: ToolHandler = {
     },
 
     onMouseUp(ctx: ToolContext) {
+        // Resume before pushHistory so the entire draw is one atomic undo entry.
+        useCanvasStore.getState().resumeHistory();
         if (ctx.currentElementIdRef.current) {
             ctx.setSelectedIds([ctx.currentElementIdRef.current]);
             ctx.pushHistory();

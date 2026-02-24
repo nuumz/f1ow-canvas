@@ -6,6 +6,7 @@ import type { ToolHandler, ToolContext } from './BaseTool';
 import type Konva from 'konva';
 import type { Point, CanvasElement, FreeDrawElement } from '@/types';
 import { generateId } from '@/utils/id';
+import { useCanvasStore } from '@/store/useCanvasStore';
 
 export const freeDrawTool: ToolHandler = {
     name: 'freedraw',
@@ -31,6 +32,8 @@ export const freeDrawTool: ToolHandler = {
             boundElements: null,
             points: [pos.x, pos.y],
         };
+        // Pause before addElement so no intermediate snapshot is recorded.
+        useCanvasStore.getState().pauseHistory();
         ctx.addElement(el);
         ctx.onElementCreate?.(el);
     },
@@ -64,6 +67,8 @@ export const freeDrawTool: ToolHandler = {
                 });
             }
             ctx.setSelectedIds([ctx.currentElementIdRef.current]);
+            // Resume then push one atomic entry for the entire stroke.
+            useCanvasStore.getState().resumeHistory();
             ctx.pushHistory();
         }
         ctx.setIsDrawing(false);

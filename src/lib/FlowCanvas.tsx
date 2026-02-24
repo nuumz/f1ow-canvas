@@ -2247,42 +2247,25 @@ FlowCanvas.displayName = 'FlowCanvas';
 const StatusBar: React.FC<{ theme: typeof DEFAULT_THEME }> = React.memo(({ theme }) => {
     const elementCount = useCanvasStore((s) => s.elements.length);
     const activeTool = useCanvasStore((s) => s.activeTool);
-    const scale = useCanvasStore((s) => s.viewport.scale);
     const selectedCount = useCanvasStore((s) => s.selectedIds.length);
-    const zoomIn = useCanvasStore((s) => s.zoomIn);
-    const zoomOut = useCanvasStore((s) => s.zoomOut);
-    const resetZoom = useCanvasStore((s) => s.resetZoom);
-
-    const zoomBtnStyle: React.CSSProperties = {
-        background: 'none',
-        border: 'none',
-        cursor: 'pointer',
-        padding: '2px 6px',
-        borderRadius: 4,
-        color: theme.textColor,
-        fontSize: 14,
-        lineHeight: 1,
-        fontWeight: 600,
-    };
 
     return (
         <div
             style={{
                 position: 'absolute',
-                bottom: 12,
-                left: '50%',
-                transform: 'translateX(-50%)',
+                bottom: 16,
+                left: 12,
                 zIndex: 50,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 16,
+                gap: 10,
                 background: theme.toolbarBg,
                 backdropFilter: 'blur(8px)',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                 borderRadius: 8,
-                padding: '4px 16px',
+                padding: '4px 12px',
                 border: `1px solid ${theme.toolbarBorder}`,
-                fontSize: 12,
+                fontSize: 11,
                 color: theme.mutedTextColor,
                 userSelect: 'none',
             }}
@@ -2290,30 +2273,18 @@ const StatusBar: React.FC<{ theme: typeof DEFAULT_THEME }> = React.memo(({ theme
             <span>
                 Tool: <strong style={{ color: theme.textColor, textTransform: 'capitalize' }}>{activeTool}</strong>
             </span>
-            <span>|</span>
+            <span style={{ opacity: 0.4 }}>|</span>
             <span>
                 Elements: <strong style={{ color: theme.textColor }}>{elementCount}</strong>
             </span>
             {selectedCount > 0 && (
                 <>
-                    <span>|</span>
+                    <span style={{ opacity: 0.4 }}>|</span>
                     <span>
-                        Selected: <strong style={{ color: theme.textColor }}>{selectedCount}</strong>
+                        Selected: <strong style={{ color: theme.activeToolColor }}>{selectedCount}</strong>
                     </span>
                 </>
             )}
-            <span>|</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <button onClick={() => zoomOut()} style={zoomBtnStyle} title="Zoom out (Cmd+-)">−</button>
-                <strong
-                    style={{ color: theme.textColor, cursor: 'pointer', minWidth: 40, textAlign: 'center' }}
-                    onClick={() => resetZoom({ animate: true })}
-                    title="Reset zoom (Cmd+0)"
-                >
-                    {Math.round(scale * 100)}%
-                </strong>
-                <button onClick={() => zoomIn()} style={zoomBtnStyle} title="Zoom in (Cmd+=)">+</button>
-            </span>
         </div>
     );
 });

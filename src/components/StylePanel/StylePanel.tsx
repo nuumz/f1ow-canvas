@@ -1,9 +1,9 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { useCanvasStore } from '../../store/useCanvasStore';
 import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
-import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead, LineType } from '../../types';
+import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
+import { PanelButton, PanelTextButton, PanelSection, ButtonRow, CompactDropdownPicker } from './ui';
 
 interface Props {
     theme: FlowCanvasTheme;
@@ -71,19 +71,92 @@ const LineTypeIcon: React.FC<{ type: string; color: string }> = ({ type, color }
     </svg>
 );
 
-/** Arrowhead preview — line with head indicator */
-const ArrowheadPreviewIcon: React.FC<{ arrowhead: Arrowhead | null; end: 'start' | 'end'; color: string }> = ({ arrowhead, end, color }) => {
-    const preview = arrowhead
-        ? ARROWHEAD_TYPES.find(a => a.type === arrowhead)?.preview ?? '—'
-        : '×';
+/**
+ * Rich arrowhead preview — draws a short line with a proper geometric arrowhead.
+ * The arrow always points toward the 'tip' end; 'start' mirrors the SVG horizontally.
+ */
+const ArrowheadLineIcon: React.FC<{ arrowhead: Arrowhead | null; end: 'start' | 'end'; color: string }> = ({ arrowhead, end, color }) => {
+    const y = 6;
+    const tip = 18;   // right edge of drawable area
+    const lineStart = 2;
+    const hs = 3.5;      // half-height of arrowhead
+    let lineStopX = tip;
+    let head: React.ReactNode = null;
+
+    switch (arrowhead) {
+        case null:
+            break;
+        case 'arrow':
+            lineStopX = tip - 2;
+            head = <path d={`M${tip-6},${y-hs} L${tip},${y} L${tip-6},${y+hs}`}
+                fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />;
+            break;
+        case 'triangle':
+            lineStopX = tip - 6;
+            head = <polygon points={`${tip},${y} ${tip-6},${y-hs} ${tip-6},${y+hs}`} fill={color} />;
+            break;
+        case 'triangle_outline':
+            lineStopX = tip - 6;
+            head = <polygon points={`${tip},${y} ${tip-6},${y-hs} ${tip-6},${y+hs}`}
+                fill="none" stroke={color} strokeWidth="1.3" strokeLinejoin="round" />;
+            break;
+        case 'circle':
+            lineStopX = tip - 7;
+            head = <circle cx={tip - 3.5} cy={y} r={3.5} fill={color} />;
+            break;
+        case 'circle_outline':
+            lineStopX = tip - 7;
+            head = <circle cx={tip - 3.5} cy={y} r={3.5} fill="none" stroke={color} strokeWidth="1.3" />;
+            break;
+        case 'diamond':
+            lineStopX = tip - 8;
+            head = <polygon points={`${tip},${y} ${tip-4},${y-hs} ${tip-8},${y} ${tip-4},${y+hs}`} fill={color} />;
+            break;
+        case 'diamond_outline':
+            lineStopX = tip - 8;
+            head = <polygon points={`${tip},${y} ${tip-4},${y-hs} ${tip-8},${y} ${tip-4},${y+hs}`}
+                fill="none" stroke={color} strokeWidth="1.3" />;
+            break;
+        case 'bar':
+            head = <line x1={tip} y1={y - hs} x2={tip} y2={y + hs}
+                stroke={color} strokeWidth="1.5" strokeLinecap="round" />;
+            break;
+        case 'crowfoot_one':
+            lineStopX = tip - 4;
+            head = <>
+                <line x1={tip-4} y1={y-hs} x2={tip-4} y2={y+hs} stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+                <line x1={tip}   y1={y-hs} x2={tip}   y2={y+hs} stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+            </>;
+            break;
+        case 'crowfoot_many':
+            lineStopX = tip - 7;
+            head = <>
+                <path d={`M${tip},${y-hs} L${tip-7},${y} L${tip},${y+hs}`}
+                    fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                <line x1={tip} y1={y-hs} x2={tip} y2={y+hs} stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+            </>;
+            break;
+        case 'crowfoot_one_or_many':
+            lineStopX = tip - 7;
+            head = <>
+                <path d={`M${tip},${y-hs} L${tip-7},${y} L${tip},${y+hs}`}
+                    fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                <line x1={tip-3.5}  y1={y-hs} x2={tip-3.5}  y2={y+hs} stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+                <line x1={tip}    y1={y-hs} x2={tip}    y2={y+hs} stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+            </>;
+            break;
+    }
+
+    // 'start' = arrowhead on left → mirror the SVG horizontally
+    const groupTransform = end === 'start' ? 'scale(-1,1) translate(-20,0)' : undefined;
+
     return (
-        <svg width="32" height="14" viewBox="0 0 32 14">
-            <line x1="4" y1="7" x2="28" y2="7" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
-            {end === 'start' ? (
-                <text x="1" y="11" fontSize="10" fill={color} fontFamily="system-ui">{preview}</text>
-            ) : (
-                <text x="21" y="11" fontSize="10" fill={color} fontFamily="system-ui" textAnchor="start">{preview}</text>
-            )}
+        <svg width={20} height={12} viewBox="0 0 20 12" fill="none" style={{ overflow: 'visible' }}>
+            <g transform={groupTransform}>
+                <line x1={lineStart} y1={y} x2={lineStopX} y2={y}
+                    stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+                {head}
+            </g>
         </svg>
     );
 };
@@ -152,96 +225,6 @@ const ActionIcons = {
         </SvgIcon>
     ),
 };
-// ─── CompactDropdownPicker ───────────────────────────────────────────────
-interface CompactPickerOption {
-    value: string | number;
-    icon: React.ReactNode;
-    label: string;
-}
-
-const CompactDropdownPicker: React.FC<{
-    options: CompactPickerOption[];
-    value: string | number;
-    onChange: (value: string | number) => void;
-    theme: FlowCanvasTheme;
-    label: string;
-    isOpen: boolean;
-    onToggle: () => void;
-    pickerRef: { current: HTMLDivElement | null };
-}> = ({ options, value, onChange, theme, label, isOpen, onToggle, pickerRef }) => {
-    const current = options.find(o => o.value === value) ?? options[0];
-    const btnRef = useRef<HTMLButtonElement>(null);
-    const [dropPos, setDropPos] = React.useState<{ top: number; left: number } | null>(null);
-
-    // Calculate fixed position relative to viewport when opening
-    React.useEffect(() => {
-        if (isOpen && btnRef.current) {
-            const rect = btnRef.current.getBoundingClientRect();
-            setDropPos({ top: rect.bottom + 3, left: rect.left });
-        } else {
-            setDropPos(null);
-        }
-    }, [isOpen]);
-
-    return (
-        <div ref={pickerRef as React.RefObject<HTMLDivElement>} style={{ position: 'relative', display: 'inline-flex' }}>
-            <button
-                ref={btnRef}
-                title={`${label}: ${current.label}`}
-                onClick={onToggle}
-                style={{
-                    display: 'flex', alignItems: 'center', gap: 3,
-                    height: 24, padding: '0 5px',
-                    borderRadius: 5,
-                    border: isOpen ? `1.5px solid ${theme.activeToolColor}` : '1px solid #e0e3e7',
-                    background: isOpen ? `${theme.activeToolColor}10` : 'transparent',
-                    cursor: 'pointer',
-                    color: isOpen ? theme.activeToolColor : theme.textColor,
-                    outline: 'none', transition: 'background 0.1s',
-                }}
-            >
-                {current.icon}
-                <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke={isOpen ? theme.activeToolColor : theme.mutedTextColor} strokeWidth="1.8" strokeLinecap="round">
-                    <polyline points="2,3.5 5,6.5 8,3.5" />
-                </svg>
-            </button>
-            {isOpen && dropPos && createPortal(
-                <div 
-                    data-compact-dropdown="true"
-                    style={{
-                    position: 'fixed',
-                    top: dropPos.top,
-                    left: dropPos.left,
-                    background: theme.panelBg,
-                    border: `1px solid ${theme.toolbarBorder}`,
-                    borderRadius: 6, padding: 3,
-                    boxShadow: '0 3px 12px rgba(0,0,0,0.1)',
-                    zIndex: 9999, display: 'flex', flexDirection: 'row', gap: 1,
-                }}>
-                    {options.map(opt => (
-                        <button
-                            key={String(opt.value)}
-                            title={opt.label}
-                            onClick={() => { onChange(opt.value); onToggle(); }}
-                            style={{
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                width: 26, height: 26, borderRadius: 4,
-                                border: opt.value === value ? `1.5px solid ${theme.activeToolColor}` : '1px solid transparent',
-                                background: opt.value === value ? `${theme.activeToolColor}10` : 'transparent',
-                                cursor: 'pointer',
-                                color: opt.value === value ? theme.activeToolColor : theme.textColor,
-                                outline: 'none',
-                            }}
-                        >
-                            {opt.icon}
-                        </button>
-                    ))}
-                </div>,
-                document.body
-            )}
-        </div>
-    );
-};
 // ═══════════════════════════════════════════════════════════════
 // StylePanel Component
 // ═══════════════════════════════════════════════════════════════
@@ -268,28 +251,21 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
     const currentEndArrowhead = useCanvasStore((s) => s.currentEndArrowhead);
     const setCurrentEndArrowhead = useCanvasStore((s) => s.setCurrentEndArrowhead);
     const [openArrowPicker, setOpenArrowPicker] = useState<'start' | 'end' | null>(null);
-    const arrowPickerRef = useRef<HTMLDivElement>(null);
-    const arrowBtnRowRef = useRef<HTMLDivElement>(null);
-    const [arrowDropPos, setArrowDropPos] = useState<{ top: number; left: number; width: number } | null>(null);
+    const startArrowPickerRef = useRef<HTMLDivElement>(null);
+    const endArrowPickerRef = useRef<HTMLDivElement>(null);
     const [openCompactPicker, setOpenCompactPicker] = useState<'sloppiness' | 'lineType' | null>(null);
     const sloppinessPickerRef = useRef<HTMLDivElement>(null);
     const lineTypePickerRef = useRef<HTMLDivElement>(null);
-    const [hoveredBtn, setHoveredBtn] = useState<string | null>(null);
     const strokeColorInputRef = useRef<HTMLInputElement>(null);
     const fillColorInputRef = useRef<HTMLInputElement>(null);
 
-    // Close arrowhead picker on outside click
+    // Close arrowhead pickers on outside click
     useEffect(() => {
         if (!openArrowPicker) return;
-        // Calculate fixed position from button row
-        if (arrowBtnRowRef.current) {
-            const rect = arrowBtnRowRef.current.getBoundingClientRect();
-            setArrowDropPos({ top: rect.bottom + 3, left: rect.left, width: rect.width });
-        }
         const handleMouseDown = (e: MouseEvent) => {
-            const isInsidePicker = arrowPickerRef.current && arrowPickerRef.current.contains(e.target as Node);
-            const isInsideDropdown = (e.target as Element).closest('[data-arrow-dropdown="true"]');
-            
+            const ref = openArrowPicker === 'start' ? startArrowPickerRef : endArrowPickerRef;
+            const isInsidePicker = ref.current && ref.current.contains(e.target as Node);
+            const isInsideDropdown = (e.target as Element).closest('[data-compact-dropdown="true"]');
             if (!isInsidePicker && !isInsideDropdown) {
                 setOpenArrowPicker(null);
             }
@@ -379,7 +355,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
 
     const opacityPct = Math.round(displayStyle.opacity * 100);
 
-    // ─── Style Helpers ────────────────────────────────────────
+    // ─── Style constants ──────────────────────────────────────
 
     const panelStyle: React.CSSProperties = {
         position: 'absolute',
@@ -399,19 +375,6 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
         fontFamily: 'system-ui, -apple-system, sans-serif',
     };
 
-    const sectionStyle: React.CSSProperties = {
-        marginBottom: 10,
-    };
-
-    const labelStyle: React.CSSProperties = {
-        display: 'block',
-        fontSize: 10,
-        fontWeight: 600,
-        color: theme.mutedTextColor,
-        marginBottom: 5,
-        letterSpacing: 0.2,
-    };
-
     const swatchStyle = (color: string, isActive: boolean): React.CSSProperties => ({
         width: SWATCH_SIZE,
         height: SWATCH_SIZE,
@@ -428,40 +391,6 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
         padding: 0,
     });
 
-    const toggleBtnStyle = (isActive: boolean, hoverKey?: string): React.CSSProperties => ({
-        width: 28,
-        height: 28,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 5,
-        border: isActive ? `1.5px solid ${theme.activeToolColor}` : '1px solid #e0e3e7',
-        background: isActive
-            ? `${theme.activeToolColor}10`
-            : (hoverKey && hoveredBtn === hoverKey ? '#f3f4f6' : 'transparent'),
-        cursor: 'pointer',
-        color: isActive ? theme.activeToolColor : theme.textColor,
-        transition: 'background 0.1s, border-color 0.1s',
-        outline: 'none',
-        padding: 0,
-    });
-
-    const actionBtnStyle = (hoverKey: string): React.CSSProperties => ({
-        width: 28,
-        height: 28,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 5,
-        border: '1px solid #e0e3e7',
-        background: hoveredBtn === hoverKey ? '#f3f4f6' : 'transparent',
-        cursor: 'pointer',
-        color: theme.textColor,
-        transition: 'background 0.1s',
-        outline: 'none',
-        padding: 0,
-    });
-
     const dividerStyle: React.CSSProperties = {
         height: 1,
         background: theme.toolbarBorder,
@@ -475,84 +404,11 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
         gap: SWATCH_GAP,
     };
 
-    const toggleRowStyle: React.CSSProperties = {
-        display: 'flex',
-        gap: 5,
-        justifyContent: 'flex-start',
-    };
-
-    // Arrowhead picker styles
-    const arrowheadBtnStyle = (isActive: boolean, hoverKey: string): React.CSSProperties => ({
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: 28,
-        borderRadius: 5,
-        border: isActive ? `1.5px solid ${theme.activeToolColor}` : '1px solid #e0e3e7',
-        background: isActive
-            ? `${theme.activeToolColor}10`
-            : (hoveredBtn === hoverKey ? '#f3f4f6' : 'transparent'),
-        cursor: 'pointer',
-        color: isActive ? theme.activeToolColor : theme.textColor,
-        transition: 'background 0.1s',
-        outline: 'none',
-        padding: 0,
-    });
-
-    const arrowheadGridStyle = (pos: { top: number; left: number; width: number }): React.CSSProperties => ({
-        position: 'fixed',
-        top: pos.top,
-        left: pos.left,
-        width: pos.width,
-        background: theme.panelBg,
-        border: `1px solid ${theme.toolbarBorder}`,
-        borderRadius: 6,
-        padding: 4,
-        boxShadow: '0 3px 12px rgba(0,0,0,0.1)',
-        zIndex: 9999,
-        display: 'grid',
-        gridTemplateColumns: 'repeat(6, 1fr)',
-        gap: 1,
-    });
-
-    const arrowheadOptionStyle = (isActive: boolean, hoverKey: string): React.CSSProperties => ({
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: 20,
-        borderRadius: 4,
-        border: isActive ? `1.5px solid ${theme.activeToolColor}` : '1px solid transparent',
-        background: isActive
-            ? `${theme.activeToolColor}10`
-            : (hoveredBtn === hoverKey ? '#f3f4f6' : 'transparent'),
-        cursor: 'pointer',
-        fontSize: 11,
-        color: isActive ? theme.activeToolColor : theme.textColor,
-        outline: 'none',
-        padding: 0,
-    });
-
-    const textBtnStyle = (isActive: boolean): React.CSSProperties => ({
-        flex: 1,
-        padding: '3px 0',
-        borderRadius: 4,
-        border: isActive ? `1.5px solid ${theme.activeToolColor}` : '1px solid #e0e3e7',
-        background: isActive ? `${theme.activeToolColor}10` : 'transparent',
-        cursor: 'pointer',
-        fontSize: 10,
-        fontWeight: 500,
-        color: isActive ? theme.activeToolColor : theme.textColor,
-        textAlign: 'center',
-        outline: 'none',
-    });
-
     return (
         <div style={panelStyle}>
 
             {/* ════════ Stroke Color ════════ */}
-            <div style={sectionStyle}>
-                <span style={labelStyle}>Stroke</span>
+            <PanelSection label="Stroke" theme={theme}>
                 <div style={colorGridStyle}>
                     {STROKE_COLORS.map((c) => (
                         <button
@@ -562,7 +418,6 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             title={c}
                         />
                     ))}
-                    {/* Custom color picker */}
                     <button
                         title="Custom color"
                         onClick={() => strokeColorInputRef.current?.click()}
@@ -584,12 +439,11 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                         style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
                     />
                 </div>
-            </div>
+            </PanelSection>
 
             {/* ════════ Background / Fill (hidden for linear) ════════ */}
             {!isLinearSelected && !isLinearTool && (
-                <div style={sectionStyle}>
-                    <span style={labelStyle}>Background</span>
+                <PanelSection label="Background" theme={theme}>
                     <div style={colorGridStyle}>
                         {FILL_COLORS.map((c) => (
                             <button
@@ -599,7 +453,6 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                 title={c === 'transparent' ? 'None' : c}
                             />
                         ))}
-                        {/* Custom color picker */}
                         <button
                             title="Custom color"
                             onClick={() => fillColorInputRef.current?.click()}
@@ -621,72 +474,55 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
                         />
                     </div>
-                </div>
+                </PanelSection>
             )}
 
             {/* ════════ Stroke Width ════════ */}
-            <div style={sectionStyle}>
-                <span style={labelStyle}>Stroke width</span>
-                <div style={toggleRowStyle}>
-                    {STROKE_WIDTH_TIERS.map((w) => {
-                        const active = displayStyle.strokeWidth === w.value;
-                        const key = `sw-${w.value}`;
-                        return (
-                            <button
-                                key={w.value}
-                                style={toggleBtnStyle(active, key)}
-                                onClick={() => apply({ strokeWidth: w.value })}
-                                title={w.label}
-                                onMouseEnter={() => setHoveredBtn(key)}
-                                onMouseLeave={() => setHoveredBtn(null)}
-                            >
-                                <StrokeWidthIcon
-                                    thickness={w.thickness}
-                                    color={active ? theme.activeToolColor : theme.textColor}
-                                />
-                            </button>
-                        );
-                    })}
-                </div>
-            </div>
+            <PanelSection label="Stroke width" theme={theme}>
+                <ButtonRow>
+                    {STROKE_WIDTH_TIERS.map((w) => (
+                        <PanelButton
+                            key={w.value}
+                            isActive={displayStyle.strokeWidth === w.value}
+                            theme={theme}
+                            onClick={() => apply({ strokeWidth: w.value })}
+                            title={w.label}
+                        >
+                            {(hl) => <StrokeWidthIcon thickness={w.thickness} color={hl ? theme.activeToolColor : theme.textColor} />}
+                        </PanelButton>
+                    ))}
+                </ButtonRow>
+            </PanelSection>
 
             {/* ════════ Stroke Style ════════ */}
-            <div style={sectionStyle}>
-                <span style={labelStyle}>Stroke style</span>
-                <div style={toggleRowStyle}>
-                    {STROKE_STYLE_CONFIGS.map((st) => {
-                        const active = displayStyle.strokeStyle === st.value;
-                        const key = `ss-${st.value}`;
-                        return (
-                            <button
-                                key={st.value}
-                                style={toggleBtnStyle(active, key)}
-                                onClick={() => apply({ strokeStyle: st.value })}
-                                title={st.label}
-                                onMouseEnter={() => setHoveredBtn(key)}
-                                onMouseLeave={() => setHoveredBtn(null)}
-                            >
-                                <StrokeStyleIcon
-                                    style={st.value}
-                                    color={active ? theme.activeToolColor : theme.textColor}
-                                />
-                            </button>
-                        );
-                    })}
-                </div>
-            </div>
+            <PanelSection label="Stroke style" theme={theme}>
+                <ButtonRow>
+                    {STROKE_STYLE_CONFIGS.map((st) => (
+                        <PanelButton
+                            key={st.value}
+                            isActive={displayStyle.strokeStyle === st.value}
+                            theme={theme}
+                            onClick={() => apply({ strokeStyle: st.value })}
+                            title={st.label}
+                        >
+                            {(hl) => <StrokeStyleIcon style={st.value} color={hl ? theme.activeToolColor : theme.textColor} />}
+                        </PanelButton>
+                    ))}
+                </ButtonRow>
+            </PanelSection>
 
             {/* ════════ Sloppiness ════════ */}
-            <div style={sectionStyle}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={labelStyle}>Sloppiness</span>
+            <PanelSection
+                label="Sloppiness"
+                theme={theme}
+                headerAction={
                     <CompactDropdownPicker
                         label="Sloppiness"
                         value={displayStyle.roughness}
                         options={ROUGHNESS_CONFIGS.map(r => ({
                             value: r.value,
                             label: r.label,
-                            icon: <SloppinessIcon level={r.value} color={displayStyle.roughness === r.value ? theme.activeToolColor : theme.textColor} />,
+                            icon: (color: string) => <SloppinessIcon level={r.value} color={color} />,
                         }))}
                         onChange={(v) => { apply({ roughness: v as number }); }}
                         theme={theme}
@@ -694,14 +530,15 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                         onToggle={() => setOpenCompactPicker(openCompactPicker === 'sloppiness' ? null : 'sloppiness')}
                         pickerRef={sloppinessPickerRef}
                     />
-                </div>
-            </div>
+                }
+            />
 
             {/* ════════ Arrow / Line Type ════════ */}
             {showLinearSection && (
-                <div style={sectionStyle}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span style={labelStyle}>{(isArrowSelected || isArrowTool) ? 'Arrow type' : 'Line type'}</span>
+                <PanelSection
+                    label={(isArrowSelected || isArrowTool) ? 'Arrow type' : 'Line type'}
+                    theme={theme}
+                    headerAction={
                         <CompactDropdownPicker
                             label={(isArrowSelected || isArrowTool) ? 'Arrow type' : 'Line type'}
                             value={selectedLinear
@@ -710,7 +547,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             options={LINE_TYPES.map(lt => ({
                                 value: lt.type,
                                 label: lt.label,
-                                icon: <LineTypeIcon type={lt.type} color={((selectedLinear ? (selectedLinear as ArrowElement | LineElement).lineType : currentLineType) === lt.type) ? theme.activeToolColor : theme.textColor} />,
+                                icon: (color: string) => <LineTypeIcon type={lt.type} color={color} />,
                             }))}
                             onChange={(v) => {
                                 const lt = LINE_TYPES.find(l => l.type === v);
@@ -737,122 +574,109 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             onToggle={() => setOpenCompactPicker(openCompactPicker === 'lineType' ? null : 'lineType')}
                             pickerRef={lineTypePickerRef}
                         />
-                    </div>
-                </div>
+                    }
+                />
             )}
 
-            {/* ════════ Arrowheads ════════ */}
+            {/* ════════ Arrows ════════ */}
             {showArrowheadSection && (
-                <div style={sectionStyle} ref={arrowPickerRef}>
-                    <span style={labelStyle}>Arrowheads</span>
-                    <div ref={arrowBtnRowRef} style={toggleRowStyle}>
-                        <button
-                            style={arrowheadBtnStyle(openArrowPicker === 'start', 'ah-start')}
-                            title={`Start: ${selectedLinear ? (selectedLinear as ArrowElement).startArrowhead ?? 'None' : currentStartArrowhead ?? 'None'}`}
-                            onClick={() => setOpenArrowPicker(openArrowPicker === 'start' ? null : 'start')}
-                            onMouseEnter={() => setHoveredBtn('ah-start')}
-                            onMouseLeave={() => setHoveredBtn(null)}
-                        >
-                            <ArrowheadPreviewIcon
-                                arrowhead={selectedLinear ? (selectedLinear as ArrowElement).startArrowhead : currentStartArrowhead}
-                                end="start"
-                                color={openArrowPicker === 'start' ? theme.activeToolColor : theme.textColor}
+                <PanelSection
+                    label="Arrows"
+                    theme={theme}
+                    headerAction={
+                        <div style={{ display: 'flex', gap: 4 }}>
+                            <CompactDropdownPicker
+                                label="Start arrowhead"
+                                value={(selectedLinear ? (selectedLinear as ArrowElement).startArrowhead : currentStartArrowhead) ?? '__none__'}
+                                options={ARROWHEAD_TYPES.map(ah => ({
+                                    value: ah.type ?? '__none__',
+                                    label: ah.label,
+                                    icon: (color: string) => <ArrowheadLineIcon arrowhead={ah.type} end="start" color={color} />,
+                                }))}
+                                onChange={(v) => {
+                                    const arrowhead = v === '__none__' ? null : v as Arrowhead;
+                                    if (selectedLinear) {
+                                        updateElement(selectedLinear.id, { startArrowhead: arrowhead } as Partial<ArrowElement>);
+                                        pushHistory();
+                                    }
+                                    setCurrentStartArrowhead(arrowhead);
+                                }}
+                                columns={4}
+                                theme={theme}
+                                isOpen={openArrowPicker === 'start'}
+                                onToggle={() => setOpenArrowPicker(openArrowPicker === 'start' ? null : 'start')}
+                                pickerRef={startArrowPickerRef}
                             />
-                        </button>
-                        <button
-                            style={arrowheadBtnStyle(openArrowPicker === 'end', 'ah-end')}
-                            title={`End: ${selectedLinear ? (selectedLinear as ArrowElement).endArrowhead ?? 'None' : currentEndArrowhead ?? 'None'}`}
-                            onClick={() => setOpenArrowPicker(openArrowPicker === 'end' ? null : 'end')}
-                            onMouseEnter={() => setHoveredBtn('ah-end')}
-                            onMouseLeave={() => setHoveredBtn(null)}
-                        >
-                            <ArrowheadPreviewIcon
-                                arrowhead={selectedLinear ? (selectedLinear as ArrowElement).endArrowhead : currentEndArrowhead}
-                                end="end"
-                                color={openArrowPicker === 'end' ? theme.activeToolColor : theme.textColor}
+                            <CompactDropdownPicker
+                                label="End arrowhead"
+                                value={(selectedLinear ? (selectedLinear as ArrowElement).endArrowhead : currentEndArrowhead) ?? '__none__'}
+                                options={ARROWHEAD_TYPES.map(ah => ({
+                                    value: ah.type ?? '__none__',
+                                    label: ah.label,
+                                    icon: (color: string) => <ArrowheadLineIcon arrowhead={ah.type} end="end" color={color} />,
+                                }))}
+                                onChange={(v) => {
+                                    const arrowhead = v === '__none__' ? null : v as Arrowhead;
+                                    if (selectedLinear) {
+                                        updateElement(selectedLinear.id, { endArrowhead: arrowhead } as Partial<ArrowElement>);
+                                        pushHistory();
+                                    }
+                                    setCurrentEndArrowhead(arrowhead);
+                                }}
+                                columns={4}
+                                theme={theme}
+                                isOpen={openArrowPicker === 'end'}
+                                onToggle={() => setOpenArrowPicker(openArrowPicker === 'end' ? null : 'end')}
+                                pickerRef={endArrowPickerRef}
                             />
-                        </button>
-                    </div>
-                    {openArrowPicker && arrowDropPos && createPortal(
-                        <div data-arrow-dropdown="true" style={arrowheadGridStyle(arrowDropPos)}>
-                            {ARROWHEAD_TYPES.map((ah) => {
-                                const currentValue = selectedLinear
-                                    ? (openArrowPicker === 'start'
-                                        ? (selectedLinear as ArrowElement).startArrowhead
-                                        : (selectedLinear as ArrowElement).endArrowhead)
-                                    : (openArrowPicker === 'start' ? currentStartArrowhead : currentEndArrowhead);
-                                const isActive = currentValue === ah.type;
-                                const key = `ahg-${ah.type ?? 'none'}`;
-                                return (
-                                    <button
-                                        key={ah.type ?? 'none'}
-                                        style={arrowheadOptionStyle(isActive, key)}
-                                        title={ah.label}
-                                        onMouseEnter={() => setHoveredBtn(key)}
-                                        onMouseLeave={() => setHoveredBtn(null)}
-                                        onClick={() => {
-                                            if (selectedLinear) {
-                                                const prop = openArrowPicker === 'start' ? 'startArrowhead' : 'endArrowhead';
-                                                updateElement(selectedLinear.id, { [prop]: ah.type } as Partial<ArrowElement>);
-                                                pushHistory();
-                                            }
-                                            if (openArrowPicker === 'start') {
-                                                setCurrentStartArrowhead(ah.type);
-                                            } else {
-                                                setCurrentEndArrowhead(ah.type);
-                                            }
-                                            setOpenArrowPicker(null);
-                                        }}
-                                    >
-                                        {ah.preview}
-                                    </button>
-                                );
-                            })}
-                        </div>,
-                        document.body
-                    )}
-                </div>
+                        </div>
+                    }
+                />
             )}
 
             {/* ════════ Opacity ════════ */}
-            <div style={sectionStyle}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 3 }}>
-                    <span style={labelStyle}>Opacity</span>
-                    <span style={{ fontSize: 10, fontWeight: 500, color: theme.textColor }}>{opacityPct}%</span>
-                </div>
-                <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={opacityPct}
-                    onChange={(e) => apply({ opacity: parseInt(e.target.value) / 100 })}
-                    style={{ width: '100%', accentColor: theme.activeToolColor, height: 4 }}
-                />
-            </div>
+            <>
+                <hr style={dividerStyle} />
+                <PanelSection theme={theme}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: theme.mutedTextColor, letterSpacing: 0.2 }}>Opacity</span>
+                        <span style={{ fontSize: 10, fontWeight: 500, color: theme.textColor }}>{opacityPct}%</span>
+                    </div>
+                    <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={opacityPct}
+                        onChange={(e) => apply({ opacity: parseInt(e.target.value) / 100 })}
+                        style={{ width: '100%', accentColor: theme.activeToolColor, height: 4 }}
+                    />
+                </PanelSection>
+            </>
 
             {/* ════════ Font Size (text) ════════ */}
             {hasTextSelected && (
                 <>
                     <hr style={dividerStyle} />
-                    <div style={sectionStyle}>
-                        <span style={labelStyle}>Font size</span>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+                    <PanelSection label="Font size" theme={theme}>
+                        <ButtonRow wrap gap={2}>
                             {FONT_SIZES.map((sz) => (
-                                <button
+                                <PanelTextButton
                                     key={sz}
-                                    style={{ ...textBtnStyle(displayStyle.fontSize === sz), flex: 'none', width: 28, padding: '2px 0' }}
+                                    isActive={displayStyle.fontSize === sz}
+                                    theme={theme}
                                     onClick={() => apply({ fontSize: sz })}
+                                    flex="none"
+                                    style={{ width: 28, padding: '2px 0' }}
                                 >
                                     {sz}
-                                </button>
+                                </PanelTextButton>
                             ))}
-                        </div>
-                    </div>
+                        </ButtonRow>
+                    </PanelSection>
 
                     {/* ════════ Font Family (text) ════════ */}
-                    <div style={sectionStyle}>
-                        <span style={labelStyle}>Font family</span>
+                    <PanelSection label="Font family" theme={theme}>
                         <select
                             value={displayStyle.fontFamily}
                             onChange={(e) => apply({ fontFamily: e.target.value })}
@@ -866,7 +690,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                 <option key={f.value} value={f.value}>{f.label}</option>
                             ))}
                         </select>
-                    </div>
+                    </PanelSection>
                 </>
             )}
 
@@ -874,32 +698,29 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
             {selectedImage && (
                 <>
                     <hr style={dividerStyle} />
-                    <div style={sectionStyle}>
-                        <span style={labelStyle}>Scale mode</span>
-                        <div style={toggleRowStyle}>
-                            {(['stretch', 'fit', 'fill'] as ImageScaleMode[]).map((mode) => {
-                                const active = selectedImage.scaleMode === mode;
-                                return (
-                                    <button
-                                        key={mode}
-                                        style={textBtnStyle(active)}
-                                        title={mode === 'stretch' ? 'Stretch to fill' : mode === 'fit' ? 'Fit (contain)' : 'Fill (cover)'}
-                                        onClick={() => {
-                                            updateElement(selectedImage.id, { scaleMode: mode } as Partial<ImageElement>);
-                                            pushHistory();
-                                        }}
-                                    >
-                                        {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
+                    <PanelSection label="Scale mode" theme={theme}>
+                        <ButtonRow>
+                            {(['stretch', 'fit', 'fill'] as ImageScaleMode[]).map((mode) => (
+                                <PanelTextButton
+                                    key={mode}
+                                    isActive={selectedImage.scaleMode === mode}
+                                    theme={theme}
+                                    title={mode === 'stretch' ? 'Stretch to fill' : mode === 'fit' ? 'Fit (contain)' : 'Fill (cover)'}
+                                    onClick={() => {
+                                        updateElement(selectedImage.id, { scaleMode: mode } as Partial<ImageElement>);
+                                        pushHistory();
+                                    }}
+                                >
+                                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                                </PanelTextButton>
+                            ))}
+                        </ButtonRow>
+                    </PanelSection>
 
                     {/* ════════ Image Corner Radius ════════ */}
-                    <div style={sectionStyle}>
+                    <PanelSection theme={theme}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 3 }}>
-                            <span style={labelStyle}>Corner radius</span>
+                            <span style={{ fontSize: 10, fontWeight: 600, color: theme.mutedTextColor, letterSpacing: 0.2 }}>Corner radius</span>
                             <span style={{ fontSize: 10, fontWeight: 500, color: theme.textColor }}>{selectedImage.cornerRadius}px</span>
                         </div>
                         <input
@@ -914,17 +735,13 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             }}
                             style={{ width: '100%', accentColor: theme.activeToolColor, height: 4 }}
                         />
-                    </div>
+                    </PanelSection>
 
                     {/* ════════ Image Replace ════════ */}
-                    <div style={sectionStyle}>
-                        <button
-                            style={{
-                                width: '100%', padding: '5px 0', borderRadius: 4,
-                                border: `1px solid ${theme.toolbarBorder}`, background: 'transparent',
-                                cursor: 'pointer', fontSize: 10, fontWeight: 500, color: theme.textColor,
-                                outline: 'none',
-                            }}
+                    <PanelSection theme={theme}>
+                        <PanelTextButton
+                            theme={theme}
+                            style={{ width: '100%', padding: '5px 0', borderRadius: 4 }}
                             onClick={() => {
                                 const input = document.createElement('input');
                                 input.type = 'file';
@@ -952,8 +769,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             }}
                         >
                             Replace Image…
-                        </button>
-                    </div>
+                        </PanelTextButton>
+                    </PanelSection>
                 </>
             )}
 
@@ -961,73 +778,69 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
             {hasSelection && (
                 <>
                     <hr style={dividerStyle} />
-                    <div style={sectionStyle}>
-                        <span style={labelStyle}>Layers</span>
-                        <div style={toggleRowStyle}>
+                    <PanelSection label="Layers" theme={theme}>
+                        <ButtonRow>
                             {([
-                                { fn: sendToBack, icon: LayerIcons.sendToBack, tip: 'Send to back', key: 'ly-stb' },
-                                { fn: sendBackward, icon: LayerIcons.sendBackward, tip: 'Send backward', key: 'ly-sb' },
-                                { fn: bringForward, icon: LayerIcons.bringForward, tip: 'Bring forward', key: 'ly-bf' },
-                                { fn: bringToFront, icon: LayerIcons.bringToFront, tip: 'Bring to front', key: 'ly-btf' },
-                            ] as const).map(({ fn, icon, tip, key }) => (
-                                <button
-                                    key={key}
-                                    style={actionBtnStyle(key)}
+                                { fn: sendToBack, icon: LayerIcons.sendToBack, tip: 'Send to back' },
+                                { fn: sendBackward, icon: LayerIcons.sendBackward, tip: 'Send backward' },
+                                { fn: bringForward, icon: LayerIcons.bringForward, tip: 'Bring forward' },
+                                { fn: bringToFront, icon: LayerIcons.bringToFront, tip: 'Bring to front' },
+                            ] as const).map(({ fn, icon, tip }) => (
+                                <PanelButton
+                                    key={tip}
+                                    variant="action"
+                                    theme={theme}
                                     title={tip}
-                                    onMouseEnter={() => setHoveredBtn(key)}
-                                    onMouseLeave={() => setHoveredBtn(null)}
                                     onClick={() => { fn(selectedIds); pushHistory(); }}
                                 >
-                                    {icon(hoveredBtn === key ? theme.activeToolColor : theme.textColor)}
-                                </button>
+                                    {(hl) => icon(hl ? theme.activeToolColor : theme.textColor)}
+                                </PanelButton>
                             ))}
-                        </div>
-                    </div>
+                        </ButtonRow>
+                    </PanelSection>
 
                     {/* ════════ Actions ════════ */}
-                    <div style={sectionStyle}>
-                        <span style={labelStyle}>Actions</span>
-                        <div style={toggleRowStyle}>
-                            <button
-                                style={actionBtnStyle('act-dup')}
+                    <PanelSection label="Actions" theme={theme}>
+                        <ButtonRow>
+                            <PanelButton
+                                variant="action"
+                                theme={theme}
                                 title="Duplicate (⌘D)"
-                                onMouseEnter={() => setHoveredBtn('act-dup')}
-                                onMouseLeave={() => setHoveredBtn(null)}
                                 onClick={() => duplicateElements(selectedIds)}
                             >
-                                {ActionIcons.duplicate(hoveredBtn === 'act-dup' ? theme.activeToolColor : theme.textColor)}
-                            </button>
-                            <button
-                                style={actionBtnStyle('act-del')}
+                                {(hl) => ActionIcons.duplicate(hl ? theme.activeToolColor : theme.textColor)}
+                            </PanelButton>
+                            <PanelButton
+                                variant="action"
+                                theme={theme}
                                 title="Delete (⌫)"
-                                onMouseEnter={() => setHoveredBtn('act-del')}
-                                onMouseLeave={() => setHoveredBtn(null)}
+                                dangerHover
                                 onClick={() => { deleteElements(selectedIds); pushHistory(); }}
                             >
-                                {ActionIcons.delete(hoveredBtn === 'act-del' ? '#e03131' : theme.textColor)}
-                            </button>
-                            <button
-                                style={{ ...actionBtnStyle('act-link'), opacity: 0.35, cursor: 'not-allowed' }}
+                                {(hl) => ActionIcons.delete(hl ? '#e03131' : theme.textColor)}
+                            </PanelButton>
+                            <PanelButton
+                                variant="action"
+                                theme={theme}
                                 title="Add link (coming soon)"
                                 disabled
                             >
                                 {ActionIcons.link(theme.mutedTextColor)}
-                            </button>
-                            <button
-                                style={actionBtnStyle('act-ung')}
+                            </PanelButton>
+                            <PanelButton
+                                variant="action"
+                                theme={theme}
                                 title="Ungroup"
-                                onMouseEnter={() => setHoveredBtn('act-ung')}
-                                onMouseLeave={() => setHoveredBtn(null)}
                                 onClick={() => {
                                     const store = useCanvasStore.getState();
                                     store.ungroupElements(selectedIds);
                                     pushHistory();
                                 }}
                             >
-                                {ActionIcons.ungroup(hoveredBtn === 'act-ung' ? theme.activeToolColor : theme.textColor)}
-                            </button>
-                        </div>
-                    </div>
+                                {(hl) => ActionIcons.ungroup(hl ? theme.activeToolColor : theme.textColor)}
+                            </PanelButton>
+                        </ButtonRow>
+                    </PanelSection>
                 </>
             )}
 
