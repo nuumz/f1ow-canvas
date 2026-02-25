@@ -96,5 +96,12 @@
     "vector",
     "sketch"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "pnpm": {
+    "overrides": {
+      "minimatch@9": "9.0.7",
+      "minimatch@10": "10.2.1",
+      "ajv": "8.18.0"
+    }
+  }
 }
