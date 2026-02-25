@@ -28,6 +28,13 @@
 const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const BASE = DIGITS.length; // 62
 
+/** Trim trailing '0' characters without using a regex (avoids ReDoS). */
+function trimTrailingZeros(s: string): string {
+    let end = s.length;
+    while (end > 0 && s[end - 1] === '0') end--;
+    return end === s.length ? s : s.slice(0, end);
+}
+
 /** The smallest and largest single characters */
 const SMALLEST_CHAR = DIGITS[0]; // '0'
 const LARGEST_CHAR = DIGITS[BASE - 1]; // 'z'
@@ -172,7 +179,7 @@ function midpoint(a: string, b: string): string {
 
         // Characters are adjacent — go one level deeper
         // Use the lower char + midpoint of (remaining a, end)
-        return commonPrefix + aPad[i] + incrementKey(aPad.slice(i + 1).replace(/0+$/, '') || SMALLEST_CHAR);
+        return commonPrefix + aPad[i] + incrementKey(trimTrailingZeros(aPad.slice(i + 1)) || SMALLEST_CHAR);
     }
 
     // Strings are equal after padding — append a midpoint character
