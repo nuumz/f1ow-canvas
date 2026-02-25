@@ -1,6 +1,6 @@
 {
   "name": "f1ow",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Interactive canvas drawing toolkit built on KonvaJS — drop-in React component for diagrams, sketches & whiteboards",
   "author": "Nuumz <info@nuumz.com>",

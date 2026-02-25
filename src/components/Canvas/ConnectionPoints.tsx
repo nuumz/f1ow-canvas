@@ -127,17 +127,19 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
         <>
             {/* Shape-matched highlight border around drop-target */}
             <ShapeHighlight el={targetEl} color={color} viewportScale={viewportScale} />
-            {/* Edge-point indicator on perimeter */}
-            <Circle
-                x={snapTarget.position.x}
-                y={snapTarget.position.y}
-                radius={6 / viewportScale}
-                fill={color}
-                stroke="white"
-                strokeWidth={2 / viewportScale}
-                listening={false}
-                perfectDrawEnabled={false}
-            />
+            {/* Edge-point indicator — only when cursor is near the edge (precise mode) */}
+            {snapTarget.isPrecise && (
+                <Circle
+                    x={snapTarget.position.x}
+                    y={snapTarget.position.y}
+                    radius={6 / viewportScale}
+                    fill={color}
+                    stroke="white"
+                    strokeWidth={2 / viewportScale}
+                    listening={false}
+                    perfectDrawEnabled={false}
+                />
+            )}
             {/* Center indicator — shown when snap will use center binding */}
             {!snapTarget.isPrecise && (() => {
                 // For rotated shapes, the visual center is rotated around the

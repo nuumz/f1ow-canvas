@@ -30,6 +30,8 @@
 - **Undo / Redo** — 100-step history snapshot system.
 - **Export** — Export canvas to PNG, SVG, or JSON.
 - **Real-Time Collaboration** — Optional CRDT via Yjs (experimental) with cursor presence.
+- **Plugin / Extension System** — Register custom element types with per-type validation and default values.
+- **Element Validation** — Every mutation path (add, update, import) is validated; invalid elements are rejected gracefully.
 - **Fully Themeable** — Dark mode, custom colors, all via props.
 - **Zero CSS Dependencies** — No external stylesheets required. Inline styled.
 - **TypeScript** — Full type safety with strict mode.
@@ -121,6 +123,7 @@ That's it — you get a full-featured canvas editor with a toolbar, style panel,
 | `className` | `string` | — | Root container CSS class |
 | `contextMenuItems` | `ContextMenuItem[]` or `(ctx) => ContextMenuItem[]` | — | Extra context menu items |
 | `renderContextMenu` | `(ctx) => ReactNode` | — | Replace built-in context menu |
+| `customElementTypes` | `CustomElementConfig[]` | — | Register custom element types ([docs](#-custom-element-types--plugins)) |
 | `collaboration` | `CollaborationConfig` | — | Enable real-time collaboration |
 | `workerConfig` | `{ elbowWorkerUrl?: string, exportWorkerUrl?: string, disabled?: boolean }` | — | Worker URLs for Next.js ([docs](docs/NEXTJS_INTEGRATION.md)) |
 
@@ -237,7 +240,7 @@ Provides CRDT-based real-time sync with cursor presence overlay. Requires a [Yjs
 
 ## 🧩 Element Types
 
-`CanvasElement` is a discriminated union of 8 types:
+`CanvasElement` is a discriminated union of 8 built-in types:
 
 - **Shapes** — `rectangle`, `ellipse`, `diamond`
 - **Connectors** — `line`, `arrow` (with bindings, routing, arrowheads)
@@ -245,7 +248,97 @@ Provides CRDT-based real-time sync with cursor presence overlay. Requires a [Yjs
 
 All elements share: `id`, `x`, `y`, `width`, `height`, `rotation`, `style`, `isLocked`, `isVisible`, `boundElements`, `groupIds`.
 
+Custom types can be added via the plugin system — see [Custom Element Types](#-custom-element-types--plugins).
+
 > Full type definitions are bundled in the package `.d.ts` files.
+
+## 🔌 Custom Element Types / Plugins
+
+f1ow supports registering custom element types. Every element passing through `addElement`, `updateElement`, `setElements`, or `importJSON` is validated — both built-in and custom types.
+
+### Option 1 — Global registration (before rendering)
+
+Register once at module level so the type is available across all `<FlowCanvas>` instances:
+
+```ts
+import { registerCustomElement } from 'f1ow';
+
+registerCustomElement({
+  type: 'sticky-note',
+  displayName: 'Sticky Note',
+
+  // Called after base-field validation passes.
+  // Return true = valid, or a string = error message.
+  validate: (el) => typeof el.content === 'string' || 'content must be a string',
+
+  // Default field values — only fills gaps, never overwrites.
+  defaults: { content: '', color: '#ffeb3b' },
+});
+```
+
+### Option 2 — Per-component registration (via prop)
+
+Types are registered once when `<FlowCanvas>` mounts. Keep the array reference stable (module constant or `useMemo`) — changes after mount have no effect.
+
+```tsx
+import { FlowCanvas } from 'f1ow';
+import type { CustomElementConfig } from 'f1ow';
+
+// ✅ Define outside the component (or useMemo) — stable reference
+const MY_TYPES: CustomElementConfig[] = [
+  {
+    type: 'sticky-note',
+    displayName: 'Sticky Note',
+    validate: (el) => typeof el.content === 'string' || 'content must be a string',
+    defaults: { content: '', color: '#ffeb3b' },
+  },
+];
+
+function App() {
+  return <FlowCanvas customElementTypes={MY_TYPES} />;
+}
+```
+
+### `CustomElementConfig` reference
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `type` | `string` | **Required.** Unique type identifier (must not clash with built-ins unless `allowOverride: true`) |
+| `displayName` | `string` | Human-readable name used in warnings. Defaults to `type` |
+| `validate` | `(el: Record<string, unknown>) => true \| string` | Extra validation after base-field checks. Return `true` = valid, string = error message |
+| `defaults` | `Partial<T>` | Default field values applied on `addElement`. Existing fields take priority |
+| `allowOverride` | `boolean` | Allow replacing an existing registration. Default `false` |
+
+### Using the registry directly
+
+```ts
+import { elementRegistry } from 'f1ow';
+
+// Check if a type is registered
+elementRegistry.isRegistered('sticky-note'); // true / false
+
+// Validate any element manually
+const result = elementRegistry.validateElement(myElement);
+if (!result.valid) console.error(result.error);
+
+// All registered types
+elementRegistry.getRegisteredTypes();
+// → ['rectangle', 'ellipse', ..., 'sticky-note']
+```
+
+### Built-in validation rules
+
+Every element is validated on every write regardless of type:
+
+| Field | Rule |
+| --- | --- |
+| `id` | Non-empty string |
+| `type` | Must be a registered type |
+| `x`, `y`, `rotation` | Finite number |
+| `width`, `height` | Finite number ≥ 0 |
+| `style.opacity` | Number in `[0, 1]` |
+| `style.strokeWidth`, `style.fontSize` | Finite number > 0 |
+| `id` / `type` in updates | Blocked — use `convertElementType` for type changes |
 
 ## 🛠️ Development
 

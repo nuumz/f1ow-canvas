@@ -8,6 +8,35 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
+ * Rollup plugin: stub out `new URL("./worker.ts", import.meta.url)` expressions
+ * in lib builds.
+ *
+ * When building as a library, Vite inlines worker scripts as base64 data-URLs
+ * (e.g. `"data:video/mp2t;base64,<thousands of chars>"`). npm's security
+ * scanner flags these as "obfuscated code".
+ *
+ * This plugin replaces every `new URL(<worker-file>, import.meta.url)` with
+ * the string `"__worker_stub__"`. The workerFactory.createWorker() function
+ * already handles unknown URLs by falling back to sync (main-thread) mode, so
+ * workers stay opt-in via the `workerConfig` prop that consumers supply.
+ */
+function stubWorkerUrlsInLibBuild(): import('vite').Plugin {
+    // Matches: new URL("./foo.worker.ts", import.meta.url)
+    //          new URL('../workers/elbowWorker.ts', import.meta.url)
+    const WORKER_URL_RE = /new\s+URL\(\s*(['"][^'"]*(?:worker|Worker)[^'"]*['"])\s*,\s*import\.meta\.url\s*\)/g;
+    return {
+        name: 'stub-worker-urls-in-lib',
+        apply: 'build',
+        transform(code, id) {
+            if (!WORKER_URL_RE.test(code)) return null;
+            WORKER_URL_RE.lastIndex = 0;
+            const patched = code.replace(WORKER_URL_RE, '"__worker_stub__"');
+            return { code: patched };
+        },
+    };
+}
+
+/**
  * Rollup plugin: strip `import.meta.url` from data-URL constructors.
  *
  * Vite inlines workers as:
@@ -43,6 +72,7 @@ export default defineConfig(({ mode }) => {
             ...(isLib
                 ? [
                       dts({ include: ['src/lib', 'src/types', 'src/constants', 'src/utils', 'src/store', 'src/components', 'src/hooks', 'src/workers'] }),
+                      stubWorkerUrlsInLibBuild(),
                       stripImportMetaUrlFromDataUrls(),
                   ]
                 : []),
@@ -54,6 +84,10 @@ export default defineConfig(({ mode }) => {
         },
         ...(isLib && {
             build: {
+                // Libraries should NOT be minified — consumers' bundlers handle
+                // minification. Un-minified output also prevents npm's security
+                // scanner from flagging readable code as "obfuscated".
+                minify: false,
                 lib: {
                     entry: path.resolve(__dirname, 'src/lib/index.ts'),
                     name: 'FlowCanvas',

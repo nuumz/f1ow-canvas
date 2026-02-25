@@ -63,6 +63,7 @@ import { useProgressiveRender } from '../hooks/useProgressiveRender';
 import { rafThrottle, toSet } from '../utils/performance';
 import { disposeElbowWorkerManager } from '../utils/elbowWorkerManager';
 import { disposeExportWorkerManager } from '../utils/exportWorkerManager';
+import { elementRegistry } from '../utils/elementRegistry';
 import {
     fileToDataURL,
     loadImage,
@@ -349,6 +350,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         renderContextMenu,
         collaboration: collaborationConfig,
         workerConfig,
+        customElementTypes,
     } = props;
 
     const theme = { ...DEFAULT_THEME, ...themeProp };
@@ -617,6 +619,40 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // ─── Keyboard Shortcuts ────────────────────────────────────
     // Always call the hook (Rules of Hooks) — pass enabled flag
     useKeyboardShortcuts(enableShortcuts && !readOnly, containerRef);
+
+    // ─── Plugin registration: custom element types ────────────
+    // Registered once on mount into the global singleton registry.
+    // The registry persists across re-renders; registration is intentionally
+    // not reversible at runtime (types cannot be unregistered).
+    //
+    // DEV RESTRICTION: changing the customElementTypes prop after mount has
+    // no effect and emits a warning — move registration to module scope via
+    // registerCustomElement() if you need it before the component mounts.
+    const initialCustomTypesRef = useRef(customElementTypes);
+    useEffect(() => {
+        const configs = initialCustomTypesRef.current;
+        if (!configs?.length) return;
+        for (const cfg of configs) {
+            try {
+                elementRegistry.register(cfg);
+            } catch {
+                // Already registered (e.g. HMR re-mount) — silently ignore.
+            }
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Warn in dev when customElementTypes reference changes after mount.
+    const isMountedRef = useRef(false);
+    useEffect(() => {
+        if (!isMountedRef.current) { isMountedRef.current = true; return; }
+        if (import.meta.env.DEV && customElementTypes !== initialCustomTypesRef.current) {
+            console.warn(
+                '[f1ow] customElementTypes changed after mount — this has no effect. ' +
+                'Register custom types before mounting <FlowCanvas> via registerCustomElement(), ' +
+                'or keep the customElementTypes array reference stable (e.g. useMemo / module-level constant).'
+            );
+        }
+    }, [customElementTypes]);
 
     // ─── Init: default style, initial elements, grid ──────────
     useEffect(() => {
@@ -2036,8 +2072,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         importJSON: (json: string) => {
             try {
                 const parsed = JSON.parse(json);
-                if (Array.isArray(parsed)) { setElements(parsed); pushHistory(); }
-            } catch { /* ignore */ }
+                if (Array.isArray(parsed)) {
+                    // setElements internally filters invalid elements and warns in dev mode
+                    setElements(parsed);
+                    pushHistory();
+                }
+            } catch {
+                if (import.meta.env.DEV) {
+                    console.warn('[f1ow] importJSON: failed to parse JSON');
+                }
+            }
         },
         getStage: () => stageRef.current,
     }));
