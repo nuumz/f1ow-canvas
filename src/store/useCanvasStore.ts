@@ -12,6 +12,7 @@ import type {
 import { DEFAULT_STYLE } from '@/constants';
 import { clearBindingsForDeletedElements } from '@/utils/connection';
 import { generateId } from '@/utils/id';
+import { elementRegistry } from '@/utils/elementRegistry';
 import { cloneAndRemapElements } from '@/utils/clone';
 import {
     zoomAtPoint,
@@ -199,13 +200,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     // ─── Element Actions ──────────────────────────────────────
     addElement: (element) => {
+        const validation = elementRegistry.validateElement(element);
+        if (!validation.valid) {
+            if (import.meta.env.DEV) {
+                console.warn(`[f1ow] addElement rejected — ${validation.error}`, element);
+            }
+            return;
+        }
+        // Apply custom defaults for plugin element types (no-op for built-ins)
+        const finalElement = elementRegistry.applyDefaults(element);
         set((state) => ({
-            elements: [...state.elements, element],
+            elements: [...state.elements, finalElement],
         }));
         get().pushHistory();
     },
 
     updateElement: (id, updates) => {
+        const updateValidation = elementRegistry.validateUpdate(updates as Record<string, unknown>);
+        if (!updateValidation.valid) {
+            if (import.meta.env.DEV) {
+                console.warn(`[f1ow] updateElement rejected — ${updateValidation.error}`);
+            }
+            return;
+        }
         set((state) => {
             const elements = state.elements;
             const idx = elements.findIndex(el => el.id === id);
@@ -221,11 +238,25 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     batchUpdateElements: (batchUpdates) => {
         if (batchUpdates.length === 0) return;
-        // Single update — skip batch overhead
+        // Single update — delegate to updateElement (already validated there)
         if (batchUpdates.length === 1) {
             get().updateElement(batchUpdates[0].id, batchUpdates[0].updates);
             return;
         }
+        // Pre-validate ALL updates outside the set() callback.
+        // Keeping the Zustand reducer pure (no side effects) is important for
+        // StrictMode double-invocation and any future time-travel / replay support.
+        const validUpdates = batchUpdates.filter(({ id, updates }) => {
+            const v = elementRegistry.validateUpdate(updates as Record<string, unknown>);
+            if (!v.valid) {
+                if (import.meta.env.DEV) {
+                    console.warn(`[f1ow] batchUpdateElements: skipping invalid update for "${id}" — ${v.error}`);
+                }
+                return false;
+            }
+            return true;
+        });
+        if (validUpdates.length === 0) return;
         set((state) => {
             const elements = state.elements;
             // Build ID→index lookup for O(1) access
@@ -234,7 +265,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 idxMap.set(elements[i].id, i);
             }
             let next: CanvasElement[] | null = null;
-            for (const { id, updates } of batchUpdates) {
+            for (const { id, updates } of validUpdates) {
                 const idx = idxMap.get(id);
                 if (idx === undefined) continue;
                 const src = next ? next[idx] : elements[idx];
@@ -279,12 +310,27 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     },
 
     setElements: (elements) => {
+        // O(1) short-circuit: if this is the exact same array reference already in
+        // the store, no change is needed.  This is the common case in controlled mode
+        // where the parent echoes back the same array it received from onChange —
+        // skipping an unnecessary O(n) validation pass over all elements.
+        if (elements === get().elements) return;
+
+        // Validate every element; silently drop (and warn in dev) any that are invalid.
+        // This protects against malformed data from importJSON, external setElements calls, etc.
+        const valid = elements.filter((el) => {
+            const result = elementRegistry.validateElement(el);
+            if (!result.valid && import.meta.env.DEV) {
+                console.warn(`[f1ow] setElements: removing invalid element — ${result.error}`, el);
+            }
+            return result.valid;
+        });
         // Reset baseline when elements are set directly (initialization, import)
         const baseline = new Map<string, CanvasElement>();
-        for (const el of elements) {
+        for (const el of valid) {
             baseline.set(el.id, el);
         }
-        set({ elements, _historyBaseline: baseline });
+        set({ elements: valid, _historyBaseline: baseline });
     },
 
     duplicateElements: (ids) => {
@@ -310,11 +356,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 if (!shapeTypes.has(el.type)) return el; // Can only convert shapes
                 if (el.type === targetType) return el;   // Already the target type
 
-                // Build converted element preserving all shared properties
-                const base = {
-                    ...el,
-                    type: targetType,
-                };
+                // Strip ALL type-specific fields from the source element so the
+                // converted element has a clean schema with no orphaned properties.
+                // e.g. rectangle→ellipse must not carry over cornerRadius.
+                const { cornerRadius: _cr, ...sharedFields } = el as typeof el & { cornerRadius?: number };
+                const base = { ...sharedFields, type: targetType };
 
                 if (targetType === 'rectangle') {
                     return { ...base, cornerRadius: 0 } as CanvasElement;
