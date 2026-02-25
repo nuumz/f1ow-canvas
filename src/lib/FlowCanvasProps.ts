@@ -1,6 +1,7 @@
 import type { CanvasElement, ElementStyle, ToolType } from '../types';
 import type { ContextMenuItem } from '../components/ContextMenu/ContextMenu';
 import type { CollaborationConfig } from '../collaboration/types';
+import type { CustomElementConfig } from '../utils/elementRegistry';
 
 // Re-export ContextMenuItem for consumer convenience
 export type { ContextMenuItem };
@@ -115,7 +116,29 @@ export interface FlowCanvasProps {
      * Pass a `CollaborationConfig` to connect, or `undefined`/`null` to disable.
      */
     collaboration?: CollaborationConfig | null;
+    // ─── Plugin / Extension ───────────────────────────────────────────────
 
+    /**
+     * Register custom element types for this canvas instance.
+     *
+     * Each config is passed to `elementRegistry.register()` once on mount.
+     * Custom types go through the same validation pipeline as built-in types;
+     * the optional `validate` callback handles type-specific field checks.
+     *
+     * @example
+     * ```tsx
+     * <FlowCanvas
+     *   customElementTypes={[{
+     *     type: 'sticky-note',
+     *     displayName: 'Sticky Note',
+     *     validate: (el) =>
+     *       typeof el.content === 'string' || 'content must be a string',
+     *     defaults: { content: '', color: '#ffeb3b' },
+     *   }]}
+     * />
+     * ```
+     */
+    customElementTypes?: CustomElementConfig[];
     // ─── Worker Configuration ─────────────────────────────────
 
     /**

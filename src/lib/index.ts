@@ -57,6 +57,10 @@ export { exportToDataURL, downloadPNG, exportToJSON, downloadJSON, exportToSVG, 
 export { drawArrowhead, arrowheadSize, flatToPoints } from '../utils/arrowheads';
 export { computeCurveControlPoint, quadBezierAt, quadBezierTangent, curveArrowPrev, CURVE_RATIO } from '../utils/curve';
 
+// Element registry — custom type registration & validation
+export { elementRegistry, registerCustomElement } from '../utils/elementRegistry';
+export type { CustomElementConfig, ValidationResult } from '../utils/elementRegistry';
+
 // Elbow routing utilities
 export {
     computeElbowPoints,
