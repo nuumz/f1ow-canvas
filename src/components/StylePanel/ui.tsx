@@ -221,13 +221,18 @@ export const ButtonRow: React.FC<{
     children: React.ReactNode;
     gap?: number;
     wrap?: boolean;
+    /** Number of equal-width grid columns. Defaults to 4 so all button groups
+     *  fill the full panel width without needing to specify it every time.
+     *  Pass 0 (or false-y) to fall back to flex layout (e.g. for wrap rows). */
+    columns?: number;
     style?: React.CSSProperties;
-}> = ({ children, gap = 5, wrap = false, style }) => (
+}> = ({ children, gap = 5, wrap = false, columns = 4, style }) => (
     <div style={{
-        display: 'flex',
+        display: columns ? 'grid' : 'flex',
+        gridTemplateColumns: columns ? `repeat(${columns}, 1fr)` : undefined,
         gap,
-        justifyContent: 'flex-start',
-        flexWrap: wrap ? 'wrap' : 'nowrap',
+        justifyContent: columns ? undefined : 'flex-start',
+        flexWrap: !columns && wrap ? 'wrap' : 'nowrap',
         ...style,
     }}>
         {children}
@@ -256,6 +261,8 @@ export interface CompactDropdownPickerProps {
     pickerRef: React.RefObject<HTMLDivElement | null>;
     /** Number of columns in the dropdown grid. Defaults to all items in a single row. */
     columns?: number;
+    /** Additional styles applied to the outer wrapper element */
+    style?: React.CSSProperties;
 }
 
 export const CompactDropdownPicker: React.FC<CompactDropdownPickerProps> = ({
@@ -268,6 +275,7 @@ export const CompactDropdownPicker: React.FC<CompactDropdownPickerProps> = ({
     onToggle,
     pickerRef,
     columns,
+    style,
 }) => {
     const current = options.find(o => o.value === value) ?? options[0];
     const btnRef = useRef<HTMLButtonElement>(null);
@@ -283,7 +291,7 @@ export const CompactDropdownPicker: React.FC<CompactDropdownPickerProps> = ({
     }, [isOpen]);
 
     return (
-        <div ref={pickerRef as React.RefObject<HTMLDivElement>} style={{ position: 'relative', display: 'inline-flex' }}>
+        <div ref={pickerRef as React.RefObject<HTMLDivElement>} style={{ position: 'relative', display: 'inline-flex', ...style }}>
             {/* Trigger button */}
             <button
                 ref={btnRef}
@@ -292,16 +300,19 @@ export const CompactDropdownPicker: React.FC<CompactDropdownPickerProps> = ({
                 style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 3,
-                    height: 24,
-                    padding: '0 5px',
-                    borderRadius: 5,
+                    justifyContent: 'center',
+                    gap: 4,
+                    width: '100%',
+                    height: 28,
+                    padding: '0 8px',
+                    borderRadius: 6,
                     border: isOpen ? `1.5px solid ${theme.activeToolColor}` : '1px solid #e0e3e7',
                     background: isOpen ? `${theme.activeToolColor}10` : 'transparent',
                     cursor: 'pointer',
                     color: isOpen ? theme.activeToolColor : theme.textColor,
                     outline: 'none',
-                    transition: 'background 0.1s',
+                    transition: 'background 0.15s, border-color 0.15s',
+                    boxShadow: isOpen ? `0 0 0 2px ${theme.activeToolColor}20` : 'none',
                 }}
             >
                 {typeof current.icon === 'function'

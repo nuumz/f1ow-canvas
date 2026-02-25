@@ -7,6 +7,7 @@ import type Konva from 'konva';
 import type { Point, CanvasElement, FreeDrawElement } from '@/types';
 import { generateId } from '@/utils/id';
 import { useCanvasStore } from '@/store/useCanvasStore';
+import { computeFreedrawBBox } from '@/utils/freehand';
 
 /** Minimum squared distance (canvas pixels) between recorded points.
  *  Filters out near-duplicate points caused by high-frequency mouse events,
@@ -75,26 +76,17 @@ export const freeDrawTool: ToolHandler = {
             }
 
             const newPoints = [...el.points, pos.x, pos.y];
-            // Compute bbox over all world-coordinate points so the spatial
-            // index always finds this element in the viewport during drawing.
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (let i = 0; i < newPoints.length; i += 2) {
-                if (newPoints[i] < minX) minX = newPoints[i];
-                if (newPoints[i] > maxX) maxX = newPoints[i];
-                if (newPoints[i + 1] < minY) minY = newPoints[i + 1];
-                if (newPoints[i + 1] > maxY) maxY = newPoints[i + 1];
-            }
-            ctx.updateElement(el.id, { 
+            // Update bbox so the spatial index never culls this element while drawing.
+            // Points are still in world coordinates (isComplete: false).
+            const { minX, minY, width, height } = computeFreedrawBBox(newPoints);
+            ctx.updateElement(el.id, {
                 points: newPoints,
                 pressures: el.pressures ? [...el.pressures, pressure] : [pressure],
-                // Keep isComplete: false — FreeDrawShape reads this to know that
-                // points are still in world coordinates (not relative to x,y)
                 isComplete: false,
-                // Update bbox for spatial index so the element is never culled
                 x: minX,
                 y: minY,
-                width: Math.max(1, maxX - minX),
-                height: Math.max(1, maxY - minY),
+                width,
+                height,
             });
         }
     },
@@ -104,18 +96,7 @@ export const freeDrawTool: ToolHandler = {
         if (ctx.currentElementIdRef.current) {
             const el = ctx.elements.find((e) => e.id === ctx.currentElementIdRef.current) as FreeDrawElement | undefined;
             if (el) {
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                for (let i = 0; i < el.points.length; i += 2) {
-                    minX = Math.min(minX, el.points[i]);
-                    minY = Math.min(minY, el.points[i + 1]);
-                    maxX = Math.max(maxX, el.points[i]);
-                    maxY = Math.max(maxY, el.points[i + 1]);
-                }
-                
-                // Ensure minimum width/height so it's selectable and visible
-                const width = Math.max(1, maxX - minX);
-                const height = Math.max(1, maxY - minY);
-                
+                const { minX, minY, width, height } = computeFreedrawBBox(el.points);
                 ctx.updateElement(el.id, {
                     x: minX,
                     y: minY,

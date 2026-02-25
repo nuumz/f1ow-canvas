@@ -40,6 +40,9 @@ export type Arrowhead =
 // ─── Line Type (routing) ──────────────────────────────────────
 export type LineType = 'sharp' | 'curved' | 'elbow';
 
+// ─── Freehand style ───────────────────────────────────────────
+export type FreehandStyle = 'standard' | 'pen' | 'brush' | 'pencil';
+
 // ─── Style ────────────────────────────────────────────────────
 export interface ElementStyle {
     strokeColor: string;
@@ -50,7 +53,7 @@ export interface ElementStyle {
     roughness: number;
     fontSize: number;
     fontFamily: string;
-    freehandStyle?: 'standard' | 'pen' | 'brush' | 'pencil';
+    freehandStyle?: FreehandStyle;
 }
 
 // ─── Base Element ─────────────────────────────────────────────

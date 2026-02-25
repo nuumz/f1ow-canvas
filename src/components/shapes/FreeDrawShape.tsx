@@ -1,9 +1,10 @@
 import React, { useCallback, useMemo } from 'react';
 import { Line, Path, Shape } from 'react-konva';
+import type Konva from 'konva';
 import type { FreeDrawElement } from '@/types';
 import { snapToGrid } from '@/utils/geometry';
 import { SELECTION_SHADOW } from '@/constants';
-import { getFreehandPath } from '@/utils/freehand';
+import { getFreehandPath, computeFreedrawBBox } from '@/utils/freehand';
 import { createRNG, drawRoughPolyline, getRoughPasses } from '@/utils/roughness';
 
 interface Props {
@@ -26,31 +27,24 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
     const handleClick = useCallback(() => onSelect(id), [onSelect, id]);
     const handleDblClick = useCallback(() => onDoubleClick?.(id), [onDoubleClick, id]);
 
-    const handleDragMove = useCallback((e: any) => {
+    const handleDragMove = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
         let nx = e.target.x(), ny = e.target.y();
         if (gridSnap) { nx = snapToGrid(nx, gridSnap); ny = snapToGrid(ny, gridSnap); e.target.x(nx); e.target.y(ny); }
         if (!gridSnap && onDragSnap) {
-            // Compute rough bounding box for smart snap
-            let minX = 0, minY = 0, maxX = 0, maxY = 0;
-            for (let i = 0; i < points.length; i += 2) {
-                minX = Math.min(minX, points[i]);
-                maxX = Math.max(maxX, points[i]);
-                minY = Math.min(minY, points[i + 1]);
-                maxY = Math.max(maxY, points[i + 1]);
-            }
-            const snapped = onDragSnap(id, { x: nx + minX, y: ny + minY, width: maxX - minX, height: maxY - minY });
+            const { minX, minY, width, height } = computeFreedrawBBox(points);
+            const snapped = onDragSnap(id, { x: nx + minX, y: ny + minY, width, height });
             if (snapped) { nx = snapped.x - minX; ny = snapped.y - minY; e.target.x(nx); e.target.y(ny); }
         }
         onDragMove?.(id, { x: nx, y: ny });
     }, [id, gridSnap, points, onDragMove, onDragSnap]);
 
-    const handleDragEnd = useCallback((e: any) => {
+    const handleDragEnd = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
         let nx = e.target.x(), ny = e.target.y();
         if (gridSnap) { nx = snapToGrid(nx, gridSnap); ny = snapToGrid(ny, gridSnap); }
         onChange(id, { x: nx, y: ny });
     }, [id, gridSnap, onChange]);
 
-    const handleTransformEnd = useCallback((e: any) => {
+    const handleTransformEnd = useCallback((e: Konva.KonvaEventObject<Event>) => {
         const node = e.target;
         const sx = node.scaleX();
         const sy = node.scaleY();
@@ -113,6 +107,38 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
         });
     }, [points, element.pressures, useVariablePath, freehandStyle, style.strokeWidth, drawing]);
 
+    // Memoised point decimation for pencil/rough mode.
+    // Keeps only points separated by > 1.5 px to prevent excessive wobble on
+    // dense strokes while preserving the overall shape of the path.
+    const simplifiedPoints = useMemo<number[]>(() => {
+        if (!useRoughPath || points.length === 0) return [];
+        const result: number[] = [points[0], points[1]];
+        let lastX = points[0];
+        let lastY = points[1];
+        for (let i = 2; i < points.length; i += 2) {
+            const px = points[i];
+            const py = points[i + 1];
+            const dx = px - lastX;
+            const dy = py - lastY;
+            if (dx * dx + dy * dy > 2.25 || i === points.length - 2) {
+                result.push(px, py);
+                lastX = px;
+                lastY = py;
+            }
+        }
+        return result;
+    }, [useRoughPath, points]);
+
+    // Memoised sceneFunc for pencil style — avoids recreating the closure and
+    // rerunning roughness computations on every render.
+    const pencilSceneFunc = useCallback((ctx: Konva.Context, shape: Konva.Shape) => {
+        const roughness = style.roughness;
+        const rng = createRNG(id);
+        ctx.beginPath();
+        drawRoughPolyline(ctx, simplifiedPoints, roughness, rng, getRoughPasses(roughness), style.strokeWidth);
+        ctx.fillStrokeShape(shape);
+    }, [id, simplifiedPoints, style.roughness, style.strokeWidth]);
+
     if (useVariablePath && svgPath) {
         return (
             <Path
@@ -143,59 +169,19 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
     }
 
     if (useRoughPath) {
-        // Pencil style: use rough.js-like rendering for a sketchy, hand-drawn look
-        const roughness = 1; // Artist level roughness
-        const passes = getRoughPasses(roughness);
-        
         return (
             <Shape
                 id={id}
                 x={renderX}
                 y={renderY}
-                // Explicit dimensions so Konva can compute this node's bounding
-                // rect from getSelfRect().  Without them, a custom sceneFunc
-                // Shape returns {w:0, h:0} — the shape is excluded from the
-                // layer's getClientRect() → excluded from the bitmap cache →
-                // stroke disappears after the layer is cached.
+                // Explicit dimensions so Konva can compute getSelfRect() correctly.
+                // Without them, a custom sceneFunc Shape returns {w:0, h:0} and is
+                // excluded from the layer cache, causing strokes to disappear.
                 width={drawing ? undefined : element.width}
                 height={drawing ? undefined : element.height}
                 rotation={rotation}
                 transformsEnabled={rotation ? 'all' : 'position'}
-                sceneFunc={(ctx, shape) => {
-                    const rng = createRNG(id);
-                    ctx.beginPath();
-                    
-                    // For pencil, we want a continuous line, not disconnected segments.
-                    // drawRoughPolyline draws each segment as a separate bezier curve.
-                    // We can use it directly, but we might want to simplify the points first
-                    // if there are too many, to avoid excessive wobble.
-                    // For now, let's just use drawRoughPolyline.
-                    
-                    // Simplify points to avoid too many segments and excessive wobble
-                    const simplifiedPoints: number[] = [];
-                    if (points.length > 0) {
-                        simplifiedPoints.push(points[0], points[1]);
-                        let lastX = points[0];
-                        let lastY = points[1];
-                        for (let i = 2; i < points.length; i += 2) {
-                            const x = points[i];
-                            const y = points[i + 1];
-                            const dx = x - lastX;
-                            const dy = y - lastY;
-                            const dist = Math.sqrt(dx * dx + dy * dy);
-                            // Only add point if it's far enough from the last one
-                            // Use a smaller distance threshold for smoother curves
-                            if (dist > 1.5 || i === points.length - 2) {
-                                simplifiedPoints.push(x, y);
-                                lastX = x;
-                                lastY = y;
-                            }
-                        }
-                    }
-                    
-                    drawRoughPolyline(ctx, simplifiedPoints, roughness, rng, passes, style.strokeWidth);
-                    ctx.fillStrokeShape(shape);
-                }}
+                sceneFunc={pencilSceneFunc}
                 stroke={style.strokeColor}
                 strokeWidth={style.strokeWidth}
                 opacity={style.opacity}

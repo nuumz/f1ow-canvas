@@ -21,7 +21,6 @@ export interface StrokeOptions {
     easing?: (distance: number) => number
   }
   last?: boolean
-  isBrush?: boolean // Custom option for f1ow-canvas
 }
 
 export interface StrokePoint {
@@ -345,6 +344,41 @@ export function getSvgPathFromStroke(points: Vec2[], closed = true): string {
 
   if (closed) result += 'Z'
   return result
+}
+
+/**
+ * Computes the axis-aligned bounding box of a flat freedraw point array
+ * `[x0, y0, x1, y1, …]`.
+ *
+ * Returns `width` / `height` clamped to a minimum of 1 so the element is
+ * always selectable even for a single-point dot.
+ */
+export function computeFreedrawBBox(points: number[]): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+} {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < points.length; i += 2) {
+    const px = points[i];
+    const py = points[i + 1];
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  if (!isFinite(minX)) { minX = 0; maxX = 0; minY = 0; maxY = 0; }
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
 }
 
 /**
