@@ -40,6 +40,9 @@ export type Arrowhead =
 // ─── Line Type (routing) ──────────────────────────────────────
 export type LineType = 'sharp' | 'curved' | 'elbow';
 
+// ─── Freehand style ───────────────────────────────────────────
+export type FreehandStyle = 'standard' | 'pen' | 'brush' | 'pencil';
+
 // ─── Style ────────────────────────────────────────────────────
 export interface ElementStyle {
     strokeColor: string;
@@ -50,6 +53,7 @@ export interface ElementStyle {
     roughness: number;
     fontSize: number;
     fontFamily: string;
+    freehandStyle?: FreehandStyle;
 }
 
 // ─── Base Element ─────────────────────────────────────────────
@@ -164,6 +168,15 @@ export interface ArrowElement extends BaseElement {
 export interface FreeDrawElement extends BaseElement {
     type: 'freedraw';
     points: number[];
+    /** Optional pressure values corresponding to each point (for pen/brush styles) */
+    pressures?: number[];
+    /**
+     * False while the stroke is actively being drawn — the bounding box
+     * (x, y, width, height) is set for spatial-index culling but the points
+     * are still in world coordinates (not yet normalised to be relative to x, y).
+     * Undefined / true means the stroke is finalised.
+     */
+    isComplete?: boolean;
 }
 
 export type TextAlign = 'left' | 'center' | 'right';

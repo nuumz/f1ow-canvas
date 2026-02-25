@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { PenLine, PenTool, Pencil as PencilIcon, Brush } from 'lucide-react';
 import { useCanvasStore } from '../../store/useCanvasStore';
-import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS } from '../../constants';
+import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS, FREEHAND_STYLES } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
 import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
 import { PanelButton, PanelTextButton, PanelSection, ButtonRow, CompactDropdownPicker } from './ui';
@@ -70,6 +71,19 @@ const LineTypeIcon: React.FC<{ type: string; color: string }> = ({ type, color }
         )}
     </svg>
 );
+
+/** Freehand style icon — uses lucide-react icons matching each pen mode */
+const FREEHAND_ICONS: Record<string, React.FC<{ size: number; color: string; strokeWidth: number }>> = {
+    standard: ({ size, color, strokeWidth }) => <PenLine size={size} color={color} strokeWidth={strokeWidth} />,
+    pen:      ({ size, color, strokeWidth }) => <PenTool size={size} color={color} strokeWidth={strokeWidth} />,
+    pencil:   ({ size, color, strokeWidth }) => <PencilIcon size={size} color={color} strokeWidth={strokeWidth} />,
+    brush:    ({ size, color, strokeWidth }) => <Brush size={size} color={color} strokeWidth={strokeWidth} />,
+};
+
+const FreehandStyleIcon: React.FC<{ style: string; color: string }> = ({ style, color }) => {
+    const Icon = FREEHAND_ICONS[style] ?? FREEHAND_ICONS['standard'];
+    return <Icon size={16} color={color} strokeWidth={1.5} />;
+};
 
 /**
  * Rich arrowhead preview — draws a short line with a proper geometric arrowhead.
@@ -151,7 +165,7 @@ const ArrowheadLineIcon: React.FC<{ arrowhead: Arrowhead | null; end: 'start' | 
     const groupTransform = end === 'start' ? 'scale(-1,1) translate(-20,0)' : undefined;
 
     return (
-        <svg width={20} height={12} viewBox="0 0 20 12" fill="none" style={{ overflow: 'visible' }}>
+        <svg width={14} height={12} viewBox="0 0 20 12" fill="none">
             <g transform={groupTransform}>
                 <line x1={lineStart} y1={y} x2={lineStopX} y2={y}
                     stroke={color} strokeWidth="1.5" strokeLinecap="round" />
@@ -321,11 +335,16 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
     const isLinearSelected = selectedLinear != null;
     const hasSelection = selectedIds.length > 0;
 
+    const isFreedrawSelected = useMemo(() => {
+        return selectedIds.some((id) => elements.find((e) => e.id === id)?.type === 'freedraw');
+    }, [selectedIds, elements]);
+
     // Show linear sections when tool is active (even without selection)
     const isLinearTool = activeTool === 'arrow' || activeTool === 'line';
     const isArrowTool = activeTool === 'arrow';
     const showLinearSection = isLinearSelected || isLinearTool;
     const showArrowheadSection = isArrowSelected || isArrowTool;
+    const showFreedrawSection = isFreedrawSelected || activeTool === 'freedraw';
 
     // ─── Compute display style from selected element(s) ───────
     // When element(s) are selected, show their style; otherwise show the global default.
@@ -441,8 +460,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 </div>
             </PanelSection>
 
-            {/* ════════ Background / Fill (hidden for linear) ════════ */}
-            {!isLinearSelected && !isLinearTool && (
+            {/* ════════ Background / Fill (hidden for linear & freedraw) ════════ */}
+            {!isLinearSelected && !isLinearTool && !isFreedrawSelected && activeTool !== 'freedraw' && (
                 <PanelSection label="Background" theme={theme}>
                     <div style={colorGridStyle}>
                         {FILL_COLORS.map((c) => (
@@ -479,7 +498,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
 
             {/* ════════ Stroke Width ════════ */}
             <PanelSection label="Stroke width" theme={theme}>
-                <ButtonRow>
+                <ButtonRow columns={4}>
                     {STROKE_WIDTH_TIERS.map((w) => (
                         <PanelButton
                             key={w.value}
@@ -487,6 +506,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             theme={theme}
                             onClick={() => apply({ strokeWidth: w.value })}
                             title={w.label}
+                            width="100%"
+                            height={32}
                         >
                             {(hl) => <StrokeWidthIcon thickness={w.thickness} color={hl ? theme.activeToolColor : theme.textColor} />}
                         </PanelButton>
@@ -496,7 +517,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
 
             {/* ════════ Stroke Style ════════ */}
             <PanelSection label="Stroke style" theme={theme}>
-                <ButtonRow>
+                <ButtonRow columns={4}>
                     {STROKE_STYLE_CONFIGS.map((st) => (
                         <PanelButton
                             key={st.value}
@@ -504,6 +525,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             theme={theme}
                             onClick={() => apply({ strokeStyle: st.value })}
                             title={st.label}
+                            width="100%"
+                            height={32}
                         >
                             {(hl) => <StrokeStyleIcon style={st.value} color={hl ? theme.activeToolColor : theme.textColor} />}
                         </PanelButton>
@@ -518,6 +541,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 headerAction={
                     <CompactDropdownPicker
                         label="Sloppiness"
+                        style={{ width: 32 }}
                         value={displayStyle.roughness}
                         options={ROUGHNESS_CONFIGS.map(r => ({
                             value: r.value,
@@ -533,6 +557,27 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 }
             />
 
+            {/* ════════ Freehand Style ════════ */}
+            {showFreedrawSection && (
+                <PanelSection label="Pen style" theme={theme}>
+                    <ButtonRow columns={4}>
+                        {FREEHAND_STYLES.map((st) => (
+                            <PanelButton
+                                key={st.value}
+                                isActive={(displayStyle.freehandStyle || 'standard') === st.value}
+                                theme={theme}
+                                onClick={() => apply({ freehandStyle: st.value })}
+                                title={st.label}
+                                width="100%"
+                                height={32}
+                            >
+                                {(hl) => <FreehandStyleIcon style={st.value} color={hl ? theme.activeToolColor : theme.textColor} />}
+                            </PanelButton>
+                        ))}
+                    </ButtonRow>
+                </PanelSection>
+            )}
+
             {/* ════════ Arrow / Line Type ════════ */}
             {showLinearSection && (
                 <PanelSection
@@ -541,6 +586,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                     headerAction={
                         <CompactDropdownPicker
                             label={(isArrowSelected || isArrowTool) ? 'Arrow type' : 'Line type'}
+                            style={{ width: 32 }}
                             value={selectedLinear
                                 ? (selectedLinear as ArrowElement | LineElement).lineType
                                 : currentLineType}
@@ -587,6 +633,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                         <div style={{ display: 'flex', gap: 4 }}>
                             <CompactDropdownPicker
                                 label="Start arrowhead"
+                                style={{ width: 32 }}
                                 value={(selectedLinear ? (selectedLinear as ArrowElement).startArrowhead : currentStartArrowhead) ?? '__none__'}
                                 options={ARROWHEAD_TYPES.map(ah => ({
                                     value: ah.type ?? '__none__',
@@ -609,6 +656,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             />
                             <CompactDropdownPicker
                                 label="End arrowhead"
+                                style={{ width: 32 }}
                                 value={(selectedLinear ? (selectedLinear as ArrowElement).endArrowhead : currentEndArrowhead) ?? '__none__'}
                                 options={ARROWHEAD_TYPES.map(ah => ({
                                     value: ah.type ?? '__none__',
@@ -659,7 +707,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 <>
                     <hr style={dividerStyle} />
                     <PanelSection label="Font size" theme={theme}>
-                        <ButtonRow wrap gap={2}>
+                        <ButtonRow columns={0} wrap gap={2}>
                             {FONT_SIZES.map((sz) => (
                                 <PanelTextButton
                                     key={sz}
@@ -699,7 +747,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 <>
                     <hr style={dividerStyle} />
                     <PanelSection label="Scale mode" theme={theme}>
-                        <ButtonRow>
+                        <ButtonRow columns={3}>
                             {(['stretch', 'fit', 'fill'] as ImageScaleMode[]).map((mode) => (
                                 <PanelTextButton
                                     key={mode}
@@ -710,6 +758,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                         updateElement(selectedImage.id, { scaleMode: mode } as Partial<ImageElement>);
                                         pushHistory();
                                     }}
+                                    flex="1"
                                 >
                                     {mode.charAt(0).toUpperCase() + mode.slice(1)}
                                 </PanelTextButton>
@@ -779,7 +828,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 <>
                     <hr style={dividerStyle} />
                     <PanelSection label="Layers" theme={theme}>
-                        <ButtonRow>
+                        <ButtonRow columns={4}>
                             {([
                                 { fn: sendToBack, icon: LayerIcons.sendToBack, tip: 'Send to back' },
                                 { fn: sendBackward, icon: LayerIcons.sendBackward, tip: 'Send backward' },
@@ -791,6 +840,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                     variant="action"
                                     theme={theme}
                                     title={tip}
+                                    width="100%"
+                                    height={32}
                                     onClick={() => { fn(selectedIds); pushHistory(); }}
                                 >
                                     {(hl) => icon(hl ? theme.activeToolColor : theme.textColor)}
@@ -801,11 +852,13 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
 
                     {/* ════════ Actions ════════ */}
                     <PanelSection label="Actions" theme={theme}>
-                        <ButtonRow>
+                        <ButtonRow columns={4}>
                             <PanelButton
                                 variant="action"
                                 theme={theme}
                                 title="Duplicate (⌘D)"
+                                width="100%"
+                                height={32}
                                 onClick={() => duplicateElements(selectedIds)}
                             >
                                 {(hl) => ActionIcons.duplicate(hl ? theme.activeToolColor : theme.textColor)}
@@ -815,6 +868,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                 theme={theme}
                                 title="Delete (⌫)"
                                 dangerHover
+                                width="100%"
+                                height={32}
                                 onClick={() => { deleteElements(selectedIds); pushHistory(); }}
                             >
                                 {(hl) => ActionIcons.delete(hl ? '#e03131' : theme.textColor)}
@@ -823,6 +878,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                 variant="action"
                                 theme={theme}
                                 title="Add link (coming soon)"
+                                width="100%"
+                                height={32}
                                 disabled
                             >
                                 {ActionIcons.link(theme.mutedTextColor)}
@@ -831,6 +888,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                                 variant="action"
                                 theme={theme}
                                 title="Ungroup"
+                                width="100%"
+                                height={32}
                                 onClick={() => {
                                     const store = useCanvasStore.getState();
                                     store.ungroupElements(selectedIds);

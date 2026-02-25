@@ -4,9 +4,10 @@ import { Rect } from 'react-konva';
 interface Props {
     box: { x: number; y: number; width: number; height: number } | null;
     selectionColor?: string;
+    viewportScale?: number;
 }
 
-const SelectionBox: React.FC<Props> = ({ box, selectionColor = '#4f8df7' }) => {
+const SelectionBox: React.FC<Props> = ({ box, selectionColor = '#4f8df7', viewportScale = 1 }) => {
     if (!box) return null;
 
     return (
@@ -17,8 +18,8 @@ const SelectionBox: React.FC<Props> = ({ box, selectionColor = '#4f8df7' }) => {
             height={box.height}
             fill={`${selectionColor}14`}
             stroke={selectionColor}
-            strokeWidth={1}
-            dash={[4, 4]}
+            strokeWidth={1 / viewportScale}
+            dash={[4 / viewportScale, 4 / viewportScale]}
             listening={false}
         />
     );

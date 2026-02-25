@@ -10,6 +10,7 @@ export const DEFAULT_STYLE: ElementStyle = {
     roughness: 0,
     fontSize: 20,
     fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
+    freehandStyle: 'standard',
 };
 
 // ─── Color Palette ────────────────────────────────────────────
@@ -98,6 +99,14 @@ export interface ArrowheadConfig {
     /** Small SVG-like preview character for UI */
     preview: string;
 }
+
+// ─── Freehand Styles ──────────────────────────────────────────
+export const FREEHAND_STYLES = [
+    { value: 'standard', label: 'Standard' },
+    { value: 'pen', label: 'Pen' },
+    { value: 'pencil', label: 'Pencil' },
+    { value: 'brush', label: 'Brush' },
+] as const;
 
 export const ARROWHEAD_TYPES: ArrowheadConfig[] = [
     { type: null, label: 'None', preview: '—' },
