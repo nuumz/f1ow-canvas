@@ -8,6 +8,12 @@ import type { Point, CanvasElement, FreeDrawElement } from '@/types';
 import { generateId } from '@/utils/id';
 import { useCanvasStore } from '@/store/useCanvasStore';
 
+/** Minimum squared distance (canvas pixels) between recorded points.
+ *  Filters out near-duplicate points caused by high-frequency mouse events,
+ *  keeping the points array small and path computation fast.
+ *  3px threshold = 9 squared — good balance between fidelity and perf. */
+const MIN_DIST_SQ = 9;
+
 export const freeDrawTool: ToolHandler = {
     name: 'freedraw',
 
@@ -54,7 +60,20 @@ export const freeDrawTool: ToolHandler = {
             if (e.evt instanceof PointerEvent && e.evt.pressure !== undefined) {
                 pressure = e.evt.pressure === 0 ? 0.5 : e.evt.pressure;
             }
-            
+
+            // ─── Point decimation: skip if too close to previous point ─
+            // Reduces the points array size on long strokes, keeping path
+            // computation and array spread costs proportional to stroke
+            // distance rather than raw event frequency.
+            const pts = el.points;
+            if (pts.length >= 2) {
+                const prevX = pts[pts.length - 2];
+                const prevY = pts[pts.length - 1];
+                const dx = pos.x - prevX;
+                const dy = pos.y - prevY;
+                if (dx * dx + dy * dy < MIN_DIST_SQ) return;
+            }
+
             const newPoints = [...el.points, pos.x, pos.y];
             // Compute bbox over all world-coordinate points so the spatial
             // index always finds this element in the viewport during drawing.

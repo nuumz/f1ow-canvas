@@ -10,6 +10,11 @@ import React, {
 import { Stage, Layer, Line as KonvaLine, Group as KonvaGroup, Rect as KonvaRect, Path as KonvaPath } from 'react-konva';
 import Konva from 'konva';
 
+// ─── Konva global configuration ──────────────────────────────
+// Disable runtime warnings — avoids console.warn + string-format overhead
+// in hot paths (drawing, drag). Safe for a well-tested production app.
+Konva.showWarnings = false;
+
 import { useCanvasStore } from '../store/useCanvasStore';
 import { useLinearEditStore } from '../store/useLinearEditStore';
 import type {
@@ -149,18 +154,28 @@ const StaticElementsLayer: React.FC<StaticLayerProps> = ({
         const rafId = requestAnimationFrame(() => {
             if (!layerRef.current) return;
 
-            // Use world-space rect (skipTransform=true) to determine bitmap size.
-            // Multiply by viewportScale to get approximate screen pixel footprint.
-            const rect = layer.getClientRect({ skipTransform: true });
+            // Konva's layer.cache({pixelRatio}) internally calls
+            // getClientRect({skipTransform: true}) to size its offscreen canvas.
+            // We must use the same world-space rect for the guard so that the
+            // check and the actual bitmap allocation agree.
+            // (Using screen-space here would make the check 2–4× smaller than
+            // the bitmap Konva actually creates, allowing silent failures when
+            // the world extent × pixelRatio exceeds the browser canvas limit.)
+            const rect = layer.getClientRect({ skipTransform: true });  // world-space
             const MAX_CACHE_DIM = 8192;
 
             // Guard: skip caching if the resulting bitmap would be too large
             // or has zero extent (nothing visible).
-            const screenW = rect.width * cachePixelRatio;
-            const screenH = rect.height * cachePixelRatio;
+            const bitmapW = rect.width  * cachePixelRatio;
+            const bitmapH = rect.height * cachePixelRatio;
 
-            if (screenW > MAX_CACHE_DIM || screenH > MAX_CACHE_DIM || rect.width <= 0 || rect.height <= 0) {
+            if (bitmapW > MAX_CACHE_DIM || bitmapH > MAX_CACHE_DIM || rect.width <= 0 || rect.height <= 0) {
+                // Too large to cache — render children directly (no bitmap).
+                // batchDraw() is required here so Konva repaints the layer
+                // from its children instead of showing a stale (or blank)
+                // cached bitmap from a previous state.
                 layer.clearCache();
+                layer.batchDraw();
                 return;
             }
 
@@ -407,6 +422,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
     const [autoEditTextId, setAutoEditTextId] = useState<string | null>(null);
 
+    // ─── Active drawing tracking ──────────────────────────────
+    // Tracks the element being actively drawn (freedraw, shapes, etc.).
+    // Moving this element to the interactive layer during drawing means the
+    // static layer stays completely unchanged → no React re-render, no bitmap
+    // cache rebuild — eliminating the O(n²) lag during long strokes.
+    const [drawingElementId, setDrawingElementId] = useState<string | null>(null);
+
     // ─── Context menu state ───────────────────────────────────
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -538,9 +560,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         // Expand selection: if ANY member of a group is selected, move
         // ALL members to the interactive layer.  This prevents a group
         // from being split across layers.
-        let effectiveSelected = selectedIdsSet;
-        if (selectedIdsSet.size > 0) {
-            const expanded = new Set(selectedIdsSet);
+        // Also treat the actively-drawing element as "interactive" so it
+        // renders on the interactive layer and doesn't destabilise the static
+        // layer's bitmap cache during mouse move.
+        let effectiveSelected = drawingElementId
+            ? new Set([...selectedIdsSet, drawingElementId])
+            : selectedIdsSet;
+        if (effectiveSelected.size > 0) {
+            const expanded = new Set(effectiveSelected);
             for (const el of visibleElements) {
                 if (expanded.has(el.id) && el.groupIds?.length) {
                     const outermostGid = el.groupIds[el.groupIds.length - 1];
@@ -551,7 +578,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     }
                 }
             }
-            if (expanded.size !== selectedIdsSet.size) {
+            if (expanded.size !== effectiveSelected.size) {
                 effectiveSelected = expanded;
             }
         }
@@ -576,7 +603,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         prevInteractiveRef.current = stableInteractive;
 
         return { staticElements: stableStatics, interactiveElements: stableInteractive };
-    }, [visibleElements, selectedIdsSet]);
+    }, [visibleElements, selectedIdsSet, drawingElementId]);
 
     // ─── Performance: progressive rendering for static layer ──
     // When the static layer has a large number of elements, render
@@ -950,7 +977,18 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             // Delegate to tool handler
             const handler = getToolHandler(ctx.activeTool);
             handler?.onMouseDown(e, pos, ctx);
+
+            // After dispatch: if drawing was started, isolate the new element
+            // on a dedicated DrawingLayer (keeps static + interactive stable).
+            if (currentElementIdRef.current) {
+                setDrawingElementId(currentElementIdRef.current);
+                // NOTE: We intentionally do NOT reduce Konva.pixelRatio here.
+                // DrawingLayer renders only 1 element so full-res draw is cheap.
+                // Reducing pixelRatio would create a low-res canvas for the
+                // DrawingLayer and cause blurry preview when zoomed in.
+            }
         },
+        // eslint-disable-next-line react-hooks/exhaustive-deps
         [readOnly, contextMenu, isSpacePanning]
     );
 
@@ -1006,7 +1044,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         const ctx = toolCtxRef.current;
         const handler = getToolHandler(ctx.activeTool);
         handler?.onMouseUp(ctx);
-    }, []);
+        // Delay clearing drawingElementId by one frame so the StaticLayer
+        // picks up the finalized element (via useEffect → layer.cache) before
+        // the DrawingLayer disappears. Without this there is a 1-frame gap
+        // where the element is visible on neither layer → flicker on mouseUp.
+        requestAnimationFrame(() => {
+            setDrawingElementId(null);
+        });
+    }, [setDrawingElementId]);
 
     // ─── Wheel (Zoom) ────────────────────────────────────────
     const handleWheel = useCallback(
@@ -2106,7 +2151,11 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
                     {/* Interactive Layer: selected elements + transformer + linear handles */}
                     <Layer listening={elementsListening}>
-                        {interactiveElements.map((el) => (
+                        {interactiveElements
+                            /* Drawing element lives on its own layer — keeps this layer
+                               stable (zero re-renders) during active stroke. */
+                            .filter(el => el.id !== drawingElementId)
+                            .map((el) => (
                             <CanvasElementComponent
                                 key={el.id}
                                 element={el}
@@ -2166,6 +2215,30 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                             );
                         })()}
                     </Layer>
+
+                    {/* Drawing Layer — single-element canvas for the active stroke.
+                        Completely isolated so Interactive Layer never re-renders during
+                        drawing. hitGraphEnabled=false: can't click what you're drawing. */}
+                    {drawingElementId && (() => {
+                        const drawingEl = resolvedElementMap.get(drawingElementId);
+                        if (!drawingEl) return null;
+                        return (
+                            <Layer listening={false} hitGraphEnabled={false}>
+                                <CanvasElementComponent
+                                    key={drawingEl.id}
+                                    element={drawingEl}
+                                    isSelected={false}
+                                    onSelect={handleElementSelect}
+                                    onChange={handleElementChange}
+                                    onDragMove={handleElementDragMove}
+                                    onDoubleClick={handleElementDoubleClick}
+                                    allElements={resolvedElements}
+                                    gridSnap={showGrid ? GRID_SIZE : undefined}
+                                    viewportScale={viewport.scale}
+                                />
+                            </Layer>
+                        );
+                    })()}
 
                     {/* Overlay Layer: non-interactive UI decorations */}
                     <Layer listening={false} hitGraphEnabled={false}>

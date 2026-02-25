@@ -75,7 +75,9 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
     const drawing = element.isComplete === false;
     const renderX = drawing ? 0 : x;
     const renderY = drawing ? 0 : y;
-    const useVariablePath = freehandStyle === 'pen' || freehandStyle === 'brush' || freehandStyle === 'standard';
+    // standard style renders via Konva <Line> (uniform stroke width).
+    // pen + brush use perfect-freehand for pressure-sensitive filled paths.
+    const useVariablePath = freehandStyle === 'pen' || freehandStyle === 'brush';
     const useRoughPath = freehandStyle === 'pencil';
 
     const svgPath = useMemo(() => {
@@ -88,48 +90,26 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
             const brushSize = style.strokeWidth * 4;
             return getFreehandPath(points, element.pressures, {
                 size: brushSize,
-                // 0.7 mirrors tldraw's DrawUtil default — gives strong calligraphic
-                // variation: fast strokes go thin, slow/heavy strokes go full width.
                 thinning: 0.7,
                 smoothing: 0.5,
                 streamline: 0.5,
                 simulatePressure: true,
-                // Linear easing (default) — no clamping.  The first point's
-                // DEFAULT_FIRST_PRESSURE (0.25) already creates a natural thin
-                // start without needing a taper zone.  The end cap rounds off
-                // the stroke tip organically when the stroke is finalised.
                 last: isLast,
-                // NO fixed-pixel taper: caps + DEFAULT_FIRST_PRESSURE are enough.
-                // Adding taper zones forces a radius fade over a fixed distance,
-                // which looks artificial and makes long strokes permanently thin.
                 start: { cap: true },
                 end:   { cap: true },
             });
         }
 
-        if (freehandStyle === 'pen') {
-            return getFreehandPath(points, element.pressures, {
-                size: style.strokeWidth * 1.8,
-                thinning: 0.6,
-                smoothing: 0.5,
-                streamline: 0.5,
-                simulatePressure: true,
-                last: isLast,
-                start: { cap: true, taper: 0 },
-                end: { cap: true, taper: 0 },
-            });
-        }
-
-        // standard: smooth constant-width stroke rendered as filled path
+        // pen: pressure-sensitive calligraphic stroke
         return getFreehandPath(points, element.pressures, {
-            size: style.strokeWidth,
-            thinning: 0,       // constant width — no pressure effect
+            size: style.strokeWidth * 1.8,
+            thinning: 0.6,
             smoothing: 0.5,
             streamline: 0.5,
-            simulatePressure: false,
+            simulatePressure: true,
             last: isLast,
-            start: { cap: true },
-            end: { cap: true },
+            start: { cap: true, taper: 0 },
+            end: { cap: true, taper: 0 },
         });
     }, [points, element.pressures, useVariablePath, freehandStyle, style.strokeWidth, drawing]);
 
@@ -172,6 +152,13 @@ const FreeDrawShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSele
                 id={id}
                 x={renderX}
                 y={renderY}
+                // Explicit dimensions so Konva can compute this node's bounding
+                // rect from getSelfRect().  Without them, a custom sceneFunc
+                // Shape returns {w:0, h:0} — the shape is excluded from the
+                // layer's getClientRect() → excluded from the bitmap cache →
+                // stroke disappears after the layer is cached.
+                width={drawing ? undefined : element.width}
+                height={drawing ? undefined : element.height}
                 rotation={rotation}
                 transformsEnabled={rotation ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {
