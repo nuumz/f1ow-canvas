@@ -14,8 +14,8 @@ import ImageShape from '../shapes/ImageShape';
 // Screen-space pixels (element's max dimension × viewport scale).
 // Below SKIP: element is sub-pixel — don't render at all.
 // Below SIMPLIFY: render a cheap colored rectangle placeholder.
-const LOD_SKIP_THRESHOLD = 2;
-const LOD_SIMPLIFY_THRESHOLD = 24;
+const LOD_SKIP_THRESHOLD = 0.5;
+const LOD_SIMPLIFY_THRESHOLD = 1;
 
 interface Props {
     element: CanvasElement;

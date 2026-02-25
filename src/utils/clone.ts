@@ -12,9 +12,13 @@ function deepCloneElement(el: CanvasElement): CanvasElement {
     if (clone.startBinding) clone.startBinding = { ...clone.startBinding };
     if (clone.endBinding) clone.endBinding = { ...clone.endBinding };
     if (clone.groupIds) clone.groupIds = [...clone.groupIds];
-    // Deep-clone points array (LineElement / ArrowElement)
+    // Deep-clone points array (LineElement / ArrowElement / FreeDrawElement)
     if (Array.isArray(clone.points)) {
-        clone.points = clone.points.map((p: any) => ({ ...p }));
+        clone.points = [...clone.points];
+    }
+    // Deep-clone pressures array (FreeDrawElement)
+    if (Array.isArray(clone.pressures)) {
+        clone.pressures = [...clone.pressures];
     }
     // Deep-clone crop (ImageElement)
     if (clone.crop) clone.crop = { ...clone.crop };

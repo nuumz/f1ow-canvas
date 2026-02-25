@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { PenLine, PenTool, Pencil as PencilIcon, Brush } from 'lucide-react';
 import { useCanvasStore } from '../../store/useCanvasStore';
-import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS } from '../../constants';
+import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS, FREEHAND_STYLES } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
 import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
 import { PanelButton, PanelTextButton, PanelSection, ButtonRow, CompactDropdownPicker } from './ui';
@@ -70,6 +71,19 @@ const LineTypeIcon: React.FC<{ type: string; color: string }> = ({ type, color }
         )}
     </svg>
 );
+
+/** Freehand style icon — uses lucide-react icons matching each pen mode */
+const FREEHAND_ICONS: Record<string, React.FC<{ size: number; color: string; strokeWidth: number }>> = {
+    standard: ({ size, color, strokeWidth }) => <PenLine size={size} color={color} strokeWidth={strokeWidth} />,
+    pen:      ({ size, color, strokeWidth }) => <PenTool size={size} color={color} strokeWidth={strokeWidth} />,
+    pencil:   ({ size, color, strokeWidth }) => <PencilIcon size={size} color={color} strokeWidth={strokeWidth} />,
+    brush:    ({ size, color, strokeWidth }) => <Brush size={size} color={color} strokeWidth={strokeWidth} />,
+};
+
+const FreehandStyleIcon: React.FC<{ style: string; color: string }> = ({ style, color }) => {
+    const Icon = FREEHAND_ICONS[style] ?? FREEHAND_ICONS['standard'];
+    return <Icon size={16} color={color} strokeWidth={1.5} />;
+};
 
 /**
  * Rich arrowhead preview — draws a short line with a proper geometric arrowhead.
@@ -321,11 +335,16 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
     const isLinearSelected = selectedLinear != null;
     const hasSelection = selectedIds.length > 0;
 
+    const isFreedrawSelected = useMemo(() => {
+        return selectedIds.some((id) => elements.find((e) => e.id === id)?.type === 'freedraw');
+    }, [selectedIds, elements]);
+
     // Show linear sections when tool is active (even without selection)
     const isLinearTool = activeTool === 'arrow' || activeTool === 'line';
     const isArrowTool = activeTool === 'arrow';
     const showLinearSection = isLinearSelected || isLinearTool;
     const showArrowheadSection = isArrowSelected || isArrowTool;
+    const showFreedrawSection = isFreedrawSelected || activeTool === 'freedraw';
 
     // ─── Compute display style from selected element(s) ───────
     // When element(s) are selected, show their style; otherwise show the global default.
@@ -532,6 +551,25 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                     />
                 }
             />
+
+            {/* ════════ Freehand Style ════════ */}
+            {showFreedrawSection && (
+                <PanelSection label="Pen style" theme={theme}>
+                    <ButtonRow>
+                        {FREEHAND_STYLES.map((st) => (
+                            <PanelButton
+                                key={st.value}
+                                isActive={(displayStyle.freehandStyle || 'standard') === st.value}
+                                theme={theme}
+                                onClick={() => apply({ freehandStyle: st.value })}
+                                title={st.label}
+                            >
+                                {(hl) => <FreehandStyleIcon style={st.value} color={hl ? theme.activeToolColor : theme.textColor} />}
+                            </PanelButton>
+                        ))}
+                    </ButtonRow>
+                </PanelSection>
+            )}
 
             {/* ════════ Arrow / Line Type ════════ */}
             {showLinearSection && (

@@ -38,6 +38,7 @@ const GridLayer: React.FC<Props> = ({ width, height, viewport, gridColor = '#e5e
         <Shape
             sceneFunc={(ctx) => {
                 const { startX, endX, startY, endY } = bounds;
+                // Keep line width constant regardless of zoom scale
                 const lineWidth = 1 / scale;
                 const nativeCtx = ctx._context as CanvasRenderingContext2D;
 

@@ -64,6 +64,26 @@ export function getElementAABB(el: CanvasElement): AABB {
     }
     if (el.type === 'freedraw' && 'points' in el) {
         // FreeDraw uses absolute points stored relative to el.x/el.y after normalization
+        // But during drawing (isComplete === false), points are in world coordinates
+        // and x/y are 0. We need to compute the actual bounds from the points.
+        if (el.isComplete === false) {
+            const pts = el.points;
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (let i = 0; i < pts.length; i += 2) {
+                const px = pts[i];
+                const py = pts[i + 1];
+                if (px < minX) minX = px;
+                if (px > maxX) maxX = px;
+                if (py < minY) minY = py;
+                if (py > maxY) maxY = py;
+            }
+            // If no points yet, return a tiny box at x,y
+            if (minX === Infinity) {
+                return { minX: el.x, minY: el.y, maxX: el.x + 1, maxY: el.y + 1 };
+            }
+            return { minX, minY, maxX, maxY };
+        }
+        
         return {
             minX: el.x,
             minY: el.y,

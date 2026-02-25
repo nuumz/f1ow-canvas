@@ -136,26 +136,30 @@ const StaticElementsLayer: React.FC<StaticLayerProps> = ({
         const layer = layerRef.current;
         if (!layer || elements.length === 0) return;
 
-        // Scale cache resolution with viewport zoom to prevent massive bitmaps
-        // at low zoom levels.  At zoom 0.1 the world-space bounding box is ~10×
-        // larger than the viewport, so we need proportionally fewer pixels per
-        // world unit to fill the same screen area.
+        // Always cache at native device resolution so elements look crisp
+        // at any zoom level. The layer's transform (scale from viewport) is
+        // applied on top of the cached bitmap, so we don't need to scale the
+        // pixel ratio with zoom — the bitmap already reflects world-space
+        // coordinates and Konva scales it to screen during compositing.
         const dpr = window.devicePixelRatio || 1;
-        const cachePixelRatio = Math.max(0.5, Math.min(viewportScale * dpr, dpr));
+        // Multiply by viewportScale to ensure the cached bitmap has enough resolution when zoomed in
+        const cachePixelRatio = dpr * Math.max(1, viewportScale);
 
         // Wait one frame for react-konva to finish drawing children
         const rafId = requestAnimationFrame(() => {
             if (!layerRef.current) return;
 
-            // Guard: skip caching if the resulting bitmap would be too large
-            // (browser canvas limit is typically 16384×16384, we use 8192 as a
-            // safe maximum to avoid excessive GPU memory usage).
+            // Use world-space rect (skipTransform=true) to determine bitmap size.
+            // Multiply by viewportScale to get approximate screen pixel footprint.
             const rect = layer.getClientRect({ skipTransform: true });
-            const cacheW = rect.width * cachePixelRatio;
-            const cacheH = rect.height * cachePixelRatio;
             const MAX_CACHE_DIM = 8192;
 
-            if (cacheW > MAX_CACHE_DIM || cacheH > MAX_CACHE_DIM || rect.width === 0 || rect.height === 0) {
+            // Guard: skip caching if the resulting bitmap would be too large
+            // or has zero extent (nothing visible).
+            const screenW = rect.width * cachePixelRatio;
+            const screenH = rect.height * cachePixelRatio;
+
+            if (screenW > MAX_CACHE_DIM || screenH > MAX_CACHE_DIM || rect.width <= 0 || rect.height <= 0) {
                 layer.clearCache();
                 return;
             }
@@ -2096,7 +2100,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                         allElements={resolvedElements}
                         gridSnap={showGrid ? GRID_SIZE : undefined}
                         onDragSnap={!showGrid ? handleDragSnap : undefined}
-                        viewportScale={efficientZoom}
+                        viewportScale={viewport.scale}
                         onGroupDragEnd={handleGroupDragEnd}
                     />
 
@@ -2165,7 +2169,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
                     {/* Overlay Layer: non-interactive UI decorations */}
                     <Layer listening={false} hitGraphEnabled={false}>
-                        <SelectionBox box={selectionBox} selectionColor={theme.selectionColor} />
+                        <SelectionBox box={selectionBox} selectionColor={theme.selectionColor} viewportScale={viewport.scale} />
 
                         {/* Connection point indicators for line/arrow tools AND linear edit endpoint drag */}
                         <ConnectionPointsOverlay
@@ -2175,6 +2179,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                                 ((activeTool === 'line' || activeTool === 'arrow') || isLinearDragging) && !readOnly
                             }
                             color={theme.selectionColor}
+                            viewportScale={viewport.scale}
                         />
 
                         {/* Smart alignment guide lines */}
@@ -2184,8 +2189,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                                     key={`ag-${i}`}
                                     points={[g.position, g.start, g.position, g.end]}
                                     stroke={theme.selectionColor}
-                                    strokeWidth={1}
-                                    dash={[4, 4]}
+                                    strokeWidth={1 / viewport.scale}
+                                    dash={[4 / viewport.scale, 4 / viewport.scale]}
                                     listening={false}
                                     perfectDrawEnabled={false}
                                 />
@@ -2194,8 +2199,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                                     key={`ag-${i}`}
                                     points={[g.start, g.position, g.end, g.position]}
                                     stroke={theme.selectionColor}
-                                    strokeWidth={1}
-                                    dash={[4, 4]}
+                                    strokeWidth={1 / viewport.scale}
+                                    dash={[4 / viewport.scale, 4 / viewport.scale]}
                                     listening={false}
                                     perfectDrawEnabled={false}
                                 />

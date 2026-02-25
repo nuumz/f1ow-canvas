@@ -21,12 +21,14 @@ interface Props {
     visible: boolean;
     /** Accent color */
     color?: string;
+    /** Current viewport scale for LOD */
+    viewportScale?: number;
 }
 
 const HIGHLIGHT_PADDING = 6;
 
 /** Render the shape-matched highlight border around the drop-target */
-const ShapeHighlight: React.FC<{ el: CanvasElement; color: string }> = ({ el, color }) => {
+const ShapeHighlight: React.FC<{ el: CanvasElement; color: string; viewportScale: number }> = ({ el, color, viewportScale }) => {
     const cx = el.x + el.width / 2;
     const cy = el.y + el.height / 2;
     const rotation = el.rotation || 0;
@@ -42,8 +44,8 @@ const ShapeHighlight: React.FC<{ el: CanvasElement; color: string }> = ({ el, co
                     radiusY={el.height / 2 + HIGHLIGHT_PADDING}
                     rotation={rotation}
                     stroke={color}
-                    strokeWidth={2}
-                    dash={[8, 4]}
+                    strokeWidth={2 / viewportScale}
+                    dash={[8 / viewportScale, 4 / viewportScale]}
                     fill={color}
                     opacity={0.1}
                     listening={false}
@@ -72,8 +74,8 @@ const ShapeHighlight: React.FC<{ el: CanvasElement; color: string }> = ({ el, co
                     offsetX={0}
                     offsetY={0}
                     stroke={color}
-                    strokeWidth={2}
-                    dash={[8, 4]}
+                    strokeWidth={2 / viewportScale}
+                    dash={[8 / viewportScale, 4 / viewportScale]}
                     fill={color}
                     opacity={0.1}
                     listening={false}
@@ -94,8 +96,8 @@ const ShapeHighlight: React.FC<{ el: CanvasElement; color: string }> = ({ el, co
                     height={el.height + HIGHLIGHT_PADDING * 2}
                     rotation={rotation}
                     stroke={color}
-                    strokeWidth={2}
-                    dash={[8, 4]}
+                    strokeWidth={2 / viewportScale}
+                    dash={[8 / viewportScale, 4 / viewportScale]}
                     cornerRadius={6}
                     fill={color}
                     opacity={0.1}
@@ -112,6 +114,7 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
     snapTarget,
     visible,
     color = '#4f8df7',
+    viewportScale = 1,
 }) => {
     if (!visible || !snapTarget) return null;
 
@@ -123,15 +126,15 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
     return (
         <>
             {/* Shape-matched highlight border around drop-target */}
-            <ShapeHighlight el={targetEl} color={color} />
+            <ShapeHighlight el={targetEl} color={color} viewportScale={viewportScale} />
             {/* Edge-point indicator on perimeter */}
             <Circle
                 x={snapTarget.position.x}
                 y={snapTarget.position.y}
-                radius={6}
+                radius={6 / viewportScale}
                 fill={color}
                 stroke="white"
-                strokeWidth={2}
+                strokeWidth={2 / viewportScale}
                 listening={false}
                 perfectDrawEnabled={false}
             />
@@ -148,10 +151,10 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
                     <Circle
                         x={center.x}
                         y={center.y}
-                        radius={4}
+                        radius={4 / viewportScale}
                         fill="white"
                         stroke={color}
-                        strokeWidth={2}
+                        strokeWidth={2 / viewportScale}
                         listening={false}
                         perfectDrawEnabled={false}
                     />
