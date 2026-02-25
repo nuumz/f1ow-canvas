@@ -61,6 +61,9 @@ export default defineConfig(({ mode }) => {
                     fileName: (format) => `f1ow.${format === 'es' ? 'js' : 'umd.cjs'}`,
                 },
                 rollupOptions: {
+                    // Packages that consumers must provide (peerDependencies).
+                    // nanoid, rbush, lucide-react are bundled — no install required by consumers.
+                    // yjs + y-websocket are optional peerDeps — only needed for collaboration.
                     external: [
                         'react',
                         'react-dom',
@@ -69,9 +72,6 @@ export default defineConfig(({ mode }) => {
                         'react-konva',
                         'zustand',
                         'zustand/middleware',
-                        'lucide-react',
-                        'nanoid',
-                        'rbush',
                         'yjs',
                         'y-websocket',
                     ],
@@ -84,9 +84,6 @@ export default defineConfig(({ mode }) => {
                             'react-konva': 'ReactKonva',
                             zustand: 'zustand',
                             'zustand/middleware': 'zustandMiddleware',
-                            'lucide-react': 'LucideReact',
-                            nanoid: 'nanoid',
-                            rbush: 'RBush',
                             yjs: 'Y',
                             'y-websocket': 'yWebsocket',
                         },
