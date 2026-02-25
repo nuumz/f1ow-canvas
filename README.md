@@ -37,14 +37,25 @@
 ## 📦 Installation
 
 ```bash
-npm install f1ow
-# or
-pnpm add f1ow
-# or
-yarn add f1ow
+# npm
+npm install f1ow konva react-konva zustand
+
+# pnpm
+pnpm add f1ow konva react-konva zustand
+
+# yarn
+yarn add f1ow konva react-konva zustand
 ```
 
-> **Peer dependencies:** `react` (≥17), `react-dom` (≥17), `konva` (≥9), `react-konva` (≥18), `zustand` (≥5)
+> `react` and `react-dom` are assumed to already be in your project. If not, add them too:
+> ```bash
+> npm install react react-dom
+> ```
+
+> **Optional — Collaboration only:** install these when using the `collaboration` prop:
+> ```bash
+> npm install yjs y-websocket
+> ```
 
 ### Next.js / Non-Vite Bundlers
 
@@ -98,6 +109,7 @@ That's it — you get a full-featured canvas editor with a toolbar, style panel,
 | `width` / `height` | `number \| string` | `'100%'` | Canvas dimensions |
 | `tools` | `ToolType[]` | all | Visible tools in toolbar |
 | `defaultTool` | `ToolType` | `'select'` | Default active tool on mount |
+| `defaultStyle` | `Partial<ElementStyle>` | — | Default drawing style for new elements |
 | `toolbarPosition` | `'top' \| 'bottom' \| 'hidden'` | `'bottom'` | Position of the main toolbar |
 | `showToolbar` | `boolean` | `true` | Show toolbar (legacy, use `toolbarPosition`) |
 | `showStylePanel` | `boolean` | `true` | Show style panel |
@@ -135,6 +147,7 @@ const ref = useRef<FlowCanvasRef>(null);
 | `setSelectedIds(ids)` | — | Set selection |
 | `clearSelection()` | — | Deselect all |
 | `setActiveTool(tool)` | — | Switch tool |
+| `getActiveTool()` | `ToolType` | Get current active tool |
 | `undo()` / `redo()` | — | History navigation |
 | `zoomTo(scale)` | — | Set zoom level |
 | `resetView()` | — | Reset pan & zoom |
@@ -199,12 +212,23 @@ Append custom items or fully replace the built-in menu:
 
 ## 🤝 Collaboration (Experimental)
 
+First install the optional peer dependencies:
+
+```bash
+npm install yjs y-websocket
+```
+
+Then pass a `CollaborationConfig` to the `collaboration` prop:
+
 ```tsx
 <FlowCanvas
   collaboration={{
-    roomId: "my-room",
-    wsUrl: "wss://my-yjs-server.example.com",
+    serverUrl: "wss://my-yjs-server.example.com",
+    roomName: "my-room",
     user: { id: "user-1", name: "Alice", color: "#e03131" },
+    // authToken: "...",        // optional auth token
+    // syncDebounceMs: 50,      // local→remote debounce (ms)
+    // awarenessThrottleMs: 100 // cursor sharing throttle (ms)
   }}
 />
 ```
