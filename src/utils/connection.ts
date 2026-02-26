@@ -24,10 +24,12 @@ import type {
     SnapTarget,
     ArrowElement,
     LineElement,
+    TextElement,
     BoundElement,
 } from '@/types';
 import { getElbowPreferredDirection } from '@/utils/elbow';
 import type { Direction } from '@/utils/elbow';
+import { computeCurveControlPoint, quadBezierAt, CURVE_RATIO } from '@/utils/curve';
 
 // ─── Shape types that can be connected ────────────────────────
 const CONNECTABLE_TYPES = new Set(['rectangle', 'ellipse', 'diamond', 'text', 'image']);
@@ -834,4 +836,106 @@ export function syncBoundElements(
             }
         }
     }
+}
+
+// ─── Connector Label Position ─────────────────────────────────
+/**
+ * Compute the midpoint position for a text label on a connector (arrow/line).
+ * Uses the connector's current points and lineType (sharp/curved/elbow)
+ * to find the visual midpoint, then centers the label around it.
+ *
+ * @param connector - The connector element (ArrowElement | LineElement)
+ * @param textWidth  - Current label text width (px)
+ * @param textHeight - Current label text height (px)
+ * @returns `{ x, y }` in world coordinates for the text element.
+ */
+export function computeConnectorLabelPosition(
+    connector: LineElement | ArrowElement,
+    textWidth: number,
+    textHeight: number,
+): { x: number; y: number } {
+    const pts = connector.points;
+    const startPt: Point = { x: pts[0], y: pts[1] };
+    const endPt: Point = { x: pts[pts.length - 2], y: pts[pts.length - 1] };
+
+    let midX: number;
+    let midY: number;
+
+    if (connector.lineType === 'curved') {
+        const curvature = (connector as ArrowElement).curvature ?? CURVE_RATIO;
+        const cp = computeCurveControlPoint(startPt, endPt, curvature);
+        const mid = quadBezierAt(startPt, cp, endPt, 0.5);
+        midX = connector.x + mid.x;
+        midY = connector.y + mid.y;
+    } else if (connector.lineType === 'elbow' && pts.length >= 4) {
+        // Elbow: use geometric midpoint of the full polyline path
+        // Walk segments and find the point at half the total length.
+        const segCount = pts.length / 2 - 1;
+        let totalLen = 0;
+        for (let i = 0; i < segCount; i++) {
+            const dx = pts[(i + 1) * 2] - pts[i * 2];
+            const dy = pts[(i + 1) * 2 + 1] - pts[i * 2 + 1];
+            totalLen += Math.sqrt(dx * dx + dy * dy);
+        }
+        const half = totalLen / 2;
+        let walked = 0;
+        midX = connector.x + (startPt.x + endPt.x) / 2; // fallback
+        midY = connector.y + (startPt.y + endPt.y) / 2;
+        for (let i = 0; i < segCount; i++) {
+            const ax = pts[i * 2], ay = pts[i * 2 + 1];
+            const bx = pts[(i + 1) * 2], by = pts[(i + 1) * 2 + 1];
+            const dx = bx - ax, dy = by - ay;
+            const segLen = Math.sqrt(dx * dx + dy * dy);
+            if (walked + segLen >= half && segLen > 0) {
+                const t = (half - walked) / segLen;
+                midX = connector.x + ax + dx * t;
+                midY = connector.y + ay + dy * t;
+                break;
+            }
+            walked += segLen;
+        }
+    } else {
+        // Sharp (straight segments): simple midpoint of start-end
+        midX = connector.x + (startPt.x + endPt.x) / 2;
+        midY = connector.y + (startPt.y + endPt.y) / 2;
+    }
+
+    return {
+        x: midX - textWidth / 2,
+        y: midY - textHeight / 2,
+    };
+}
+
+/**
+ * Sync bound text labels for a list of connector elements.
+ * Returns an array of text element updates to batch-apply.
+ *
+ * @param connectorIds - IDs of connectors whose labels need syncing
+ * @param elMap        - O(1) element lookup map
+ */
+export function syncConnectorLabels(
+    connectorIds: Iterable<string>,
+    elMap: Map<string, CanvasElement>,
+): Array<{ id: string; updates: Partial<TextElement> }> {
+    const updates: Array<{ id: string; updates: Partial<TextElement> }> = [];
+
+    for (const connId of connectorIds) {
+        const conn = elMap.get(connId);
+        if (!conn || (conn.type !== 'arrow' && conn.type !== 'line')) continue;
+        if (!conn.boundElements) continue;
+
+        const connector = conn as LineElement | ArrowElement;
+        for (const be of conn.boundElements) {
+            if (be.type !== 'text') continue;
+            const txt = elMap.get(be.id) as TextElement | undefined;
+            if (!txt) continue;
+
+            const textW = Math.max(10, txt.width || 60);
+            const textH = txt.height || 30;
+            const pos = computeConnectorLabelPosition(connector, textW, textH);
+            updates.push({ id: txt.id, updates: { x: pos.x, y: pos.y } });
+        }
+    }
+
+    return updates;
 }

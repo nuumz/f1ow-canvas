@@ -84,6 +84,49 @@ const DemoApp: React.FC = () => {
                     theme={{
                         canvasBackground: '#fafafa',
                     }}
+                    renderAnnotation={({ element: el, scale }) => {
+                        // Skip connectors and text — annotate shapes only
+                        if (el.type === 'line' || el.type === 'arrow' || el.type === 'text' || el.type === 'freedraw') {
+                            return null;
+                        }
+
+                        // Zoom-independent badge base style
+                        const badge: React.CSSProperties = {
+                            position: 'absolute',
+                            top: -6,
+                            right: -6,
+                            pointerEvents: 'auto',
+                            borderRadius: '50%',
+                            minWidth: 18,
+                            height: 18,
+                            padding: '0 4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 10,
+                            fontWeight: 600,
+                            fontFamily: 'system-ui, sans-serif',
+                            lineHeight: 1,
+                            cursor: 'pointer',
+                            boxShadow: '0 1px 3px rgba(0,0,0,.15)',
+                            transform: `scale(${1 / scale})`,
+                            transformOrigin: 'top right',
+                        };
+
+                        return (
+                            <div
+                                style={{
+                                    ...badge,
+                                    background: '#4f46e5',
+                                    color: '#fff',
+                                }}
+                                title={`ID: ${el.id}`}
+                                onClick={() => console.log('annotation click →', el)}
+                            >
+                                {el.type.charAt(0).toUpperCase()}
+                            </div>
+                        );
+                    }}
                 />
             </div>
         </div>

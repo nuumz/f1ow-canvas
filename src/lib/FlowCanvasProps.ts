@@ -2,6 +2,7 @@ import type { CanvasElement, ElementStyle, ToolType } from '../types';
 import type { ContextMenuItem } from '../components/ContextMenu/ContextMenu';
 import type { CollaborationConfig } from '../collaboration/types';
 import type { CustomElementConfig } from '../utils/elementRegistry';
+import type { RenderAnnotationFn } from '../components/Canvas/AnnotationsOverlay';
 
 // Re-export ContextMenuItem for consumer convenience
 export type { ContextMenuItem };
@@ -93,6 +94,43 @@ export interface FlowCanvasProps {
 
     /** Additional CSS class for the root container */
     className?: string;
+
+    /**
+     * Render custom annotations, badges, or status indicators on top of canvas elements.
+     *
+     * The callback receives an `AnnotationContext` with:
+     * - `element`      — the canvas element being annotated
+     * - `screenBounds` — pre-computed screen-space `{ x, y, width, height }`
+     * - `scale`        — current viewport zoom level
+     *
+     * Return a React node to render, or `null` to skip.
+     * The node is positioned inside a `div` that matches the element's
+     * screen bounding box. Use `position: absolute` to place content
+     * relative to the element (e.g. `top: -10, right: -10` for a badge).
+     *
+     * **Important:** The entire overlay is `pointerEvents: 'none'`.
+     * Add `pointerEvents: 'auto'` on interactive nodes (buttons, badges).
+     *
+     * @example
+     * ```tsx
+     * <FlowCanvas
+     *   renderAnnotation={({ element, scale }) => {
+     *     if (element.type !== 'rectangle') return null;
+     *     return (
+     *       <div style={{
+     *         position: 'absolute', top: -10, right: -10,
+     *         pointerEvents: 'auto',
+     *         // Scale-aware badge sizing:
+     *         transform: `scale(${1 / scale})`, transformOrigin: 'top right',
+     *       }}>
+     *         🔴
+     *       </div>
+     *     );
+     *   }}
+     * />
+     * ```
+     */
+    renderAnnotation?: RenderAnnotationFn;
 
     // ─── Context Menu Customization ───────────────────────────
 

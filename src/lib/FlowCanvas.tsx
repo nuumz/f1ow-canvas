@@ -1,6 +1,7 @@
 import React, {
     forwardRef,
     useEffect,
+    useLayoutEffect,
     useImperativeHandle,
     useMemo,
     useRef,
@@ -33,9 +34,10 @@ import {
     recomputeBoundPoints,
     findConnectorsForElement,
     syncBoundElements,
+    computeConnectorLabelPosition,
+    syncConnectorLabels,
 } from '../utils/connection';
 import { MIN_ZOOM, MAX_ZOOM, DEFAULT_STYLE, TOOLS, GRID_SIZE } from '../constants';
-import { computeCurveControlPoint, quadBezierAt, CURVE_RATIO } from '../utils/curve';
 import { animateViewport, zoomAtPoint } from '../utils/camera';
 import { getToolHandler } from '../tools';
 import type { ToolContext } from '../tools';
@@ -78,6 +80,7 @@ import { DEFAULT_THEME } from './FlowCanvasProps';
 import { useCollaboration } from '../collaboration/useCollaboration';
 import CursorOverlay from '../collaboration/CursorOverlay';
 import { WorkerConfigContext } from '../contexts/WorkerConfigContext';
+import { AnnotationsOverlay } from '../components/Canvas/AnnotationsOverlay';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -138,43 +141,37 @@ const StaticElementsLayer: React.FC<StaticLayerProps> = ({
     // become a single drawImage() — reducing draw cost from O(N) to O(1).
     // Cache is invalidated (cleared + recreated) whenever elements,
     // viewportScale or autoEditTextId change.
-    useEffect(() => {
+    //
+    // CRITICAL: useLayoutEffect instead of useEffect.
+    // useEffect runs AFTER the browser paints → the stale bitmap from
+    // the previous element set is visible for 1 frame → flicker.
+    // useLayoutEffect runs synchronously before paint, so clearCache()
+    // takes effect immediately and the browser never shows the stale bitmap.
+    useLayoutEffect(() => {
         const layer = layerRef.current;
-        if (!layer || elements.length === 0) return;
+        if (!layer) return;
 
-        // Always cache at native device resolution so elements look crisp
-        // at any zoom level. The layer's transform (scale from viewport) is
-        // applied on top of the cached bitmap, so we don't need to scale the
-        // pixel ratio with zoom — the bitmap already reflects world-space
-        // coordinates and Konva scales it to screen during compositing.
+        // Clear stale bitmap immediately (synchronous, before paint).
+        // Without this, the previous cached bitmap would show elements
+        // that no longer belong to this layer (e.g. an element that just
+        // moved to the interactive layer on select/deselect).
+        layer.clearCache();
+
+        if (elements.length === 0) return;
+
+        // Re-cache on next frame for performance.
         const dpr = window.devicePixelRatio || 1;
-        // Multiply by viewportScale to ensure the cached bitmap has enough resolution when zoomed in
         const cachePixelRatio = dpr * Math.max(1, viewportScale);
 
-        // Wait one frame for react-konva to finish drawing children
         const rafId = requestAnimationFrame(() => {
             if (!layerRef.current) return;
 
-            // Konva's layer.cache({pixelRatio}) internally calls
-            // getClientRect({skipTransform: true}) to size its offscreen canvas.
-            // We must use the same world-space rect for the guard so that the
-            // check and the actual bitmap allocation agree.
-            // (Using screen-space here would make the check 2–4× smaller than
-            // the bitmap Konva actually creates, allowing silent failures when
-            // the world extent × pixelRatio exceeds the browser canvas limit.)
-            const rect = layer.getClientRect({ skipTransform: true });  // world-space
+            const rect = layer.getClientRect({ skipTransform: true });
             const MAX_CACHE_DIM = 8192;
-
-            // Guard: skip caching if the resulting bitmap would be too large
-            // or has zero extent (nothing visible).
             const bitmapW = rect.width  * cachePixelRatio;
             const bitmapH = rect.height * cachePixelRatio;
 
             if (bitmapW > MAX_CACHE_DIM || bitmapH > MAX_CACHE_DIM || rect.width <= 0 || rect.height <= 0) {
-                // Too large to cache — render children directly (no bitmap).
-                // batchDraw() is required here so Konva repaints the layer
-                // from its children instead of showing a stale (or blank)
-                // cached bitmap from a previous state.
                 layer.clearCache();
                 layer.batchDraw();
                 return;
@@ -186,7 +183,6 @@ const StaticElementsLayer: React.FC<StaticLayerProps> = ({
 
         return () => {
             cancelAnimationFrame(rafId);
-            layer.clearCache();
         };
     }, [elements, viewportScale, autoEditTextId]);
 
@@ -348,6 +344,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         className,
         contextMenuItems: contextMenuItemsProp,
         renderContextMenu,
+        renderAnnotation,
         collaboration: collaborationConfig,
         workerConfig,
         customElementTypes,
@@ -471,6 +468,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     const resolvedElements = useMemo(() => {
         let result: CanvasElementType[] | null = null; // lazy — only allocate when needed
 
+        // Track connectors whose points changed → need to sync their bound text labels
+        const changedConnectorIds = new Set<string>();
+
         for (let i = 0; i < elements.length; i++) {
             const el = elements[i];
             if (el.type !== 'line' && el.type !== 'arrow') {
@@ -479,11 +479,22 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
             const conn = el as LineElement | ArrowElement;
             if (!conn.startBinding && !conn.endBinding) {
+                // Even unbound connectors need label position sync when
+                // the connector is being dragged (x/y changes).
+                if (conn.boundElements?.some(be => be.type === 'text')) {
+                    changedConnectorIds.add(conn.id);
+                    if (!result) result = elements.slice(0, i);
+                }
                 if (result) result[i] = el;
                 continue;
             }
             // Skip: connector being point-dragged — let the drag control its position
+            // But still sync bound text labels so they follow during drag.
             if (isLinearDragging && linearEditId === el.id) {
+                if (conn.boundElements?.some(be => be.type === 'text')) {
+                    if (!result) result = elements.slice(0, i);
+                    changedConnectorIds.add(conn.id);
+                }
                 if (result) result[i] = el;
                 continue;
             }
@@ -494,8 +505,36 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     result = elements.slice(0, i);
                 }
                 result[i] = { ...conn, ...recomputed } as CanvasElementType;
+                changedConnectorIds.add(conn.id);
             } else {
                 if (result) result[i] = el;
+            }
+        }
+
+        // ─── Sync bound text labels for connectors whose points changed ──
+        // Without this, connector labels stay at their old stored position
+        // because the memo comparator skips allElements changes.
+        if (changedConnectorIds.size > 0 && result) {
+            // Build O(1) lookup from the patched result array
+            const patchMap = new Map<string, CanvasElementType>();
+            for (const el of result) patchMap.set(el.id, el);
+
+            for (const connId of changedConnectorIds) {
+                const conn = patchMap.get(connId) as (LineElement | ArrowElement) | undefined;
+                if (!conn?.boundElements) continue;
+                for (const be of conn.boundElements) {
+                    if (be.type !== 'text') continue;
+                    const txtIdx = result.findIndex(e => e.id === be.id);
+                    if (txtIdx === -1) continue;
+                    const txt = result[txtIdx] as TextElement;
+                    const textW = Math.max(10, txt.width || 60);
+                    const textH = txt.height || 30;
+                    const pos = computeConnectorLabelPosition(conn, textW, textH);
+                    // Only clone if position actually changed
+                    if (Math.abs(txt.x - pos.x) > 0.01 || Math.abs(txt.y - pos.y) > 0.01) {
+                        result[txtIdx] = { ...txt, x: pos.x, y: pos.y } as CanvasElementType;
+                    }
+                }
             }
         }
 
@@ -580,6 +619,26 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     }
                 }
             }
+
+            // ── Expand bound text: keep parent + text on the same layer ──
+            // When ANY element with bound text is selected (connector or shape),
+            // promote its bound text labels to the interactive layer.  Without
+            // this, the parent moves to interactive while its label stays on
+            // static — causing visual desync during drag.
+            for (const el of visibleElements) {
+                if (!expanded.has(el.id)) continue;
+                // Promote bound text for ALL element types (connectors AND shapes)
+                if (el.boundElements) {
+                    for (const be of el.boundElements) {
+                        if (be.type === 'text') expanded.add(be.id);
+                    }
+                }
+                // Reverse: bound text selected → promote its container (any type)
+                if (el.type === 'text' && (el as TextElement).containerId) {
+                    expanded.add((el as TextElement).containerId!);
+                }
+            }
+
             if (expanded.size !== effectiveSelected.size) {
                 effectiveSelected = expanded;
             }
@@ -1010,6 +1069,27 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             // Hand tool panning is handled by Konva's native Stage dragging
             if (ctx.activeTool === 'hand' || isSpacePanning) return;
 
+            // ── Commit any in-progress text edit BEFORE selection changes ──
+            // When text is being edited via a DOM textarea, mousedown fires
+            // BEFORE blur.  If the selection changes here (e.g. clearSelection
+            // on empty canvas click), the TextShape unmounts/remounts between
+            // layers.  The remounted component would re-open the editor with
+            // stale text content (the value before the edit), and when that
+            // second textarea eventually blurs it overwrites the committed
+            // value — reverting the user's edit.
+            //
+            // Fix: explicitly blur() the textarea first.  This fires the
+            // existing finishEdit handler synchronously, which commits the
+            // new text to the store and cleans up editing state.  By the time
+            // the tool handler runs (and potentially calls clearSelection),
+            // the store already has the correct text.
+            if (editingTextId) {
+                const activeEl = document.activeElement;
+                if (activeEl?.tagName === 'TEXTAREA') {
+                    (activeEl as HTMLTextAreaElement).blur();
+                }
+            }
+
             // Delegate to tool handler
             const handler = getToolHandler(ctx.activeTool);
             handler?.onMouseDown(e, pos, ctx);
@@ -1025,7 +1105,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [readOnly, contextMenu, isSpacePanning]
+        [readOnly, contextMenu, isSpacePanning, editingTextId]
     );
 
     // ─── Mouse Move ───────────────────────────────────────────
@@ -1197,6 +1277,41 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // Lightweight position update during drag — no history push.
     // When dragging a bound connector directly, unbind it first.
     const unboundConnectorIdsRef = useRef<Set<string>>(new Set());
+    // ─── Helper: imperatively sync shape-bound text Konva nodes ──
+    // Shape + bound text = one visual unit.  During drag / transform,
+    // React props haven't updated yet (batched microtask), so we must
+    // move the Konva text nodes directly for frame-perfect sync.
+    const syncBoundTextNodes = useCallback(
+        (el: CanvasElementType, newX: number, newY: number, newW?: number, newH?: number) => {
+            if (!el.boundElements || !stageRef.current) return;
+            if (!['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) return;
+            const elements = useCanvasStore.getState().elements;
+            const PADDING = 4;
+            const shapeW = newW ?? el.width;
+            const shapeH = newH ?? el.height;
+            for (const be of el.boundElements) {
+                if (be.type !== 'text') continue;
+                const txt = elements.find(e => e.id === be.id) as TextElement | undefined;
+                if (!txt) continue;
+                const textNode = stageRef.current.findOne('#' + be.id);
+                if (!textNode) continue;
+                const textNodeH = (textNode as any).height?.() ?? txt.height;
+                // Width follows container
+                const tw = Math.max(20, shapeW - PADDING * 2);
+                (textNode as any).width?.(tw);
+                // X
+                textNode.x(newX + PADDING);
+                // Y — vertical alignment
+                let newTY: number;
+                if (txt.verticalAlign === 'top') newTY = newY + PADDING;
+                else if (txt.verticalAlign === 'bottom') newTY = newY + shapeH - textNodeH - PADDING;
+                else newTY = newY + (shapeH - textNodeH) / 2;
+                textNode.y(newTY);
+            }
+        },
+        []
+    );
+
     const handleElementDragMove = useCallback(
         (id: string, updates: Partial<CanvasElementType>) => {
             if (readOnly) return;
@@ -1219,6 +1334,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             // recomputation that dominates frame time with 1K+ elements.
             if (selectedIds.length > MULTI_DRAG_STORE_SKIP_THRESHOLD) {
                 isMultiDragSkippingRef.current = true;
+                // Still need to sync shape-bound text since those nodes
+                // are not draggable (listening=false) — Konva won't move them.
+                const el = elements.find(e => e.id === id);
+                if (el) {
+                    const nx = (updates as { x?: number }).x ?? el.x;
+                    const ny = (updates as { y?: number }).y ?? el.y;
+                    syncBoundTextNodes(el, nx, ny);
+                }
                 return;
             }
             isMultiDragSkippingRef.current = false;
@@ -1253,6 +1376,17 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             if (!dragBatchRef.current) dragBatchRef.current = new Map();
             dragBatchRef.current.set(id, updates);
 
+            // ─── Imperatively move shape-bound text during drag ──
+            // Shape + bound text = one visual unit.  Move text nodes
+            // directly for frame-perfect sync (store updates are deferred).
+            if (el) {
+                const nx = (updates as { x?: number }).x ?? el.x;
+                const ny = (updates as { y?: number }).y ?? el.y;
+                const nw = (updates as { width?: number }).width;
+                const nh = (updates as { height?: number }).height;
+                syncBoundTextNodes(el, nx, ny, nw, nh);
+            }
+
             // Schedule flush via microtask (runs after all sync onDragMove
             // callbacks in the same frame, but before the next paint).
             if (!dragFlushScheduledRef.current) {
@@ -1260,7 +1394,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 queueMicrotask(flushDragBatch);
             }
         },
-        [readOnly, flushDragBatch]
+        [readOnly, flushDragBatch, syncBoundTextNodes]
     );
 
     // Alignment snap callback: shapes call this during drag to get snapped position + show guides
@@ -1339,7 +1473,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 if (recomputed) connectorUpdates.push({ id: freshConn.id, updates: recomputed });
             }
 
-            // Bound text sync
+            // Bound text sync (shape containers)
             const el = elMap.get(id);
             if (el?.boundElements && ['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) {
                 const PADDING = 4;
@@ -1357,7 +1491,23 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
         }
 
-        // Apply all connector/text updates in a single batch
+        // ─── Sync connector-bound text labels ─────────────────
+        // After connector recomputation, labels must follow the new midpoints.
+        // Re-read fresh elements to include connector position updates above.
+        if (processedConnectors.size > 0) {
+            // Refresh elMap with connector updates applied
+            if (connectorUpdates.length > 0) {
+                useCanvasStore.getState().batchUpdateElements(connectorUpdates);
+                connectorUpdates.length = 0; // already applied
+                const refreshed = useCanvasStore.getState().elements;
+                elMap.clear();
+                for (const el of refreshed) elMap.set(el.id, el);
+            }
+            const labelUpdates = syncConnectorLabels(processedConnectors, elMap as Map<string, CanvasElementType>);
+            for (const lu of labelUpdates) connectorUpdates.push(lu as { id: string; updates: Partial<CanvasElementType> });
+        }
+
+        // Apply all remaining connector/text updates in a single batch
         if (connectorUpdates.length > 0) {
             useCanvasStore.getState().batchUpdateElements(connectorUpdates);
         }
@@ -1393,6 +1543,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
 
             updateElement(id, updates);
+            if (Object.prototype.hasOwnProperty.call(updates, 'text')) {
+                useCanvasStore.getState().pushHistory();
+            }
 
             // Clear alignment guides on drag end
             setAlignGuides([]);
@@ -1407,12 +1560,25 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             for (const e of freshElements) elMap.set(e.id, e);
 
             // Persist final connector points on drag-end (for serialization)
+            const updatedConnectorIds: string[] = [];
             const connectors = findConnectorsForElement(id, freshElements);
             for (const conn of connectors) {
                 const freshConn = elMap.get(conn.id) as LineElement | ArrowElement | undefined;
                 if (!freshConn) continue;
                 const recomputed = recomputeBoundPoints(freshConn, freshElements);
-                if (recomputed) updateElement(freshConn.id, recomputed);
+                if (recomputed) {
+                    updateElement(freshConn.id, recomputed);
+                    updatedConnectorIds.push(freshConn.id);
+                }
+            }
+
+            // ─── Sync connector-bound text labels ─────────────
+            if (updatedConnectorIds.length > 0) {
+                const refreshedEls = useCanvasStore.getState().elements;
+                const refreshedMap = new Map<string, CanvasElementType>();
+                for (const e of refreshedEls) refreshedMap.set(e.id, e);
+                const labelUpdates = syncConnectorLabels(updatedConnectorIds, refreshedMap as Map<string, CanvasElementType>);
+                for (const lu of labelUpdates) updateElement(lu.id, lu.updates);
             }
 
             // ─── Sync bound text stored coords when shape container changes ──
@@ -1514,7 +1680,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     if (recomputed) connectorUpdates.push({ id: freshConn.id, updates: recomputed });
                 }
 
-                // Sync bound text positions
+                // Sync bound text positions (shape containers)
                 const el = elMap.get(member.id);
                 if (el?.boundElements && ['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) {
                     const PADDING = 4;
@@ -1532,6 +1698,19 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                         connectorUpdates.push({ id: be.id, updates: { x: el.x + PADDING, y: ty, width: tw } });
                     }
                 }
+            }
+
+            // ─── Sync connector-bound text labels ─────────────────
+            if (processedConnectors.size > 0) {
+                if (connectorUpdates.length > 0) {
+                    useCanvasStore.getState().batchUpdateElements(connectorUpdates);
+                    connectorUpdates.length = 0;
+                    const refreshed = useCanvasStore.getState().elements;
+                    elMap.clear();
+                    for (const el of refreshed) elMap.set(el.id, el);
+                }
+                const labelUpdates = syncConnectorLabels(processedConnectors, elMap as Map<string, CanvasElementType>);
+                for (const lu of labelUpdates) connectorUpdates.push(lu as { id: string; updates: Partial<CanvasElementType> });
             }
 
             if (connectorUpdates.length > 0) {
@@ -1570,26 +1749,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 // Create new bound text at midpoint
                 const textId = generateId();
                 const conn = el as LineElement | ArrowElement;
-                const pts = conn.points;
-                const startPt = { x: pts[0], y: pts[1] };
-                const endPt = { x: pts[pts.length - 2], y: pts[pts.length - 1] };
-
-                let midX: number, midY: number;
-                if (conn.lineType === 'curved') {
-                    const cp = computeCurveControlPoint(startPt, endPt, (conn as ArrowElement).curvature ?? CURVE_RATIO);
-                    const mid = quadBezierAt(startPt, cp, endPt, 0.5);
-                    midX = conn.x + mid.x;
-                    midY = conn.y + mid.y;
-                } else {
-                    midX = conn.x + (startPt.x + endPt.x) / 2;
-                    midY = conn.y + (startPt.y + endPt.y) / 2;
-                }
+                const labelPos = computeConnectorLabelPosition(conn, 100, 30);
 
                 const textEl: TextElement = {
                     id: textId,
                     type: 'text',
-                    x: midX,
-                    y: midY,
+                    x: labelPos.x,
+                    y: labelPos.y,
                     width: 100,
                     height: 30,
                     rotation: 0,
@@ -1622,7 +1788,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 const existingTextBinding = el.boundElements?.find(be => be.type === 'text');
                 if (existingTextBinding) {
                     // Focus existing bound text for editing
-                    setSel([existingTextBinding.id]);
+                    // Keep parent shape in selection so the transformer stays
+                    // visible — prevents flicker from rapid select/deselect.
+                    setSel([existingTextBinding.id, id]);
                     setAutoEditTextId(existingTextBinding.id);
                     return;
                 }
@@ -1658,7 +1826,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 });
 
                 // Select and auto-edit the new text
-                setSel([textId]);
+                // Keep parent shape in selection so the transformer stays
+                // visible — prevents flicker from rapid select/deselect.
+                setSel([textId, id]);
                 setAutoEditTextId(textId);
                 return;
             }
@@ -1721,13 +1891,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         (id: string, isEmpty: boolean) => {
             setEditingTextId(null);
             setAutoEditTextId(null);
+
+            const { elements: els, selectedIds: currentSel, setSelectedIds: setSel,
+                    updateElement: update, deleteElements: del } = useCanvasStore.getState();
+            const textEl = els.find(e => e.id === id);
+            const containerId = (textEl?.type === 'text') ? (textEl as TextElement).containerId : null;
+
             // Auto-delete empty text elements
             if (isEmpty) {
-                const { elements: els, updateElement: update, deleteElements: del, pushHistory: push } = useCanvasStore.getState();
                 // If bound text, also remove the reference from the container
-                const textEl = els.find(e => e.id === id);
-                if (textEl?.type === 'text' && (textEl as TextElement).containerId) {
-                    const containerId = (textEl as TextElement).containerId!;
+                if (containerId) {
                     const container = els.find(e => e.id === containerId);
                     if (container?.boundElements) {
                         update(containerId, {
@@ -1739,6 +1912,15 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 onElementDelete?.([id]);
             } else {
                 useCanvasStore.getState().pushHistory();
+            }
+
+            // Restore selection to the parent shape (remove text from selectedIds)
+            // so the user returns to "shape selected" state after editing.
+            if (containerId && currentSel.includes(containerId)) {
+                setSel([containerId]);
+            } else if (containerId) {
+                // If shape wasn't in selection, just clear text from selection
+                setSel(currentSel.filter(sid => sid !== id));
             }
         },
         [onElementDelete],
@@ -2230,6 +2412,12 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                                 if (el.type === 'text' && (el as TextElement).containerId) return false;
                                 // Hide transformer while text is being edited
                                 if (sid === editingTextId) return false;
+                                // Hide transformer for the container shape while its bound text is
+                                // being edited — keeps the selection glow but removes resize handles
+                                if (editingTextId) {
+                                    const editingEl = resolvedElementMap.get(editingTextId);
+                                    if (editingEl?.type === 'text' && (editingEl as TextElement).containerId === sid) return false;
+                                }
                                 return true;
                             });
                             if (transformableIds.length === 0) return null;
@@ -2363,6 +2551,17 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 )
             )}
 
+            {/* Custom Annotations Overlay */}
+            {renderAnnotation && (
+                <AnnotationsOverlay
+                    elements={resolvedElements}
+                    viewport={viewport}
+                    containerWidth={dimensions.width}
+                    containerHeight={dimensions.height}
+                    renderAnnotation={renderAnnotation}
+                />
+            )}
+
             {/* Status Bar */}
             {showStatusBar && <StatusBar theme={theme} />}
         </div>
@@ -2376,9 +2575,22 @@ FlowCanvas.displayName = 'FlowCanvas';
 // Uses granular Zustand selectors so it only re-renders when its
 // specific data changes — not on every element update.
 const StatusBar: React.FC<{ theme: typeof DEFAULT_THEME }> = React.memo(({ theme }) => {
-    const elementCount = useCanvasStore((s) => s.elements.length);
+    // Count only "logical" elements — bound text (containerId != null) is
+    // part of its parent shape, not a separate user-visible element.
+    const elementCount = useCanvasStore((s) =>
+        s.elements.filter(el => !(el.type === 'text' && (el as TextElement).containerId)).length
+    );
     const activeTool = useCanvasStore((s) => s.activeTool);
-    const selectedCount = useCanvasStore((s) => s.selectedIds.length);
+    const selectedCount = useCanvasStore((s) => {
+        const els = s.elements;
+        // Exclude bound text from the selected count — selecting a shape
+        // with bound text may include the text id internally but the user
+        // perceives it as one element.
+        return s.selectedIds.filter(id => {
+            const el = els.find(e => e.id === id);
+            return el && !(el.type === 'text' && (el as TextElement).containerId);
+        }).length;
+    });
 
     return (
         <div
