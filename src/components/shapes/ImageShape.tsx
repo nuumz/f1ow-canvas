@@ -4,6 +4,46 @@ import type Konva from 'konva';
 import type { ImageElement } from '@/types';
 import { snapToGrid } from '@/utils/geometry';
 
+// ── Global image cache ───────────────────────────────────────
+// Prevents costly re-decode when ImageShape remounts during
+// layer transitions (selected ↔ unselected). Without this,
+// useState resets to null on remount → placeholder flashes.
+const IMAGE_CACHE_LIMIT = 50;
+const _imgCache = new Map<string, HTMLImageElement>();
+
+function cachedLoadImage(
+    src: string,
+    onLoad: (img: HTMLImageElement) => void,
+    onError: () => void,
+): () => void {
+    // Cache hit — return synchronously (no placeholder flash)
+    const cached = _imgCache.get(src);
+    if (cached) {
+        onLoad(cached);
+        return () => {};
+    }
+
+    // Cache miss — async load
+    const img = new window.Image();
+    // Only set crossOrigin for real URLs — data: URLs have no origin
+    // and crossOrigin can cause silent load failures in Safari.
+    if (!src.startsWith('data:')) {
+        img.crossOrigin = 'anonymous';
+    }
+    img.onload = () => {
+        // LRU eviction
+        if (_imgCache.size >= IMAGE_CACHE_LIMIT) {
+            const oldest = _imgCache.keys().next().value;
+            if (oldest !== undefined) _imgCache.delete(oldest);
+        }
+        _imgCache.set(src, img);
+        onLoad(img);
+    };
+    img.onerror = () => onError();
+    img.src = src;
+    return () => { img.onload = null; img.onerror = null; };
+}
+
 interface Props {
     element: ImageElement;
     isSelected: boolean;
@@ -32,8 +72,12 @@ const ImageShape: React.FC<Props> = ({
     element, isSelected, isGrouped, onSelect, onChange, onDragMove, onDoubleClick, gridSnap, onDragSnap,
 }) => {
     const { id, x, y, width, height, rotation, src, style, crop, cornerRadius, scaleMode, isLocked } = element;
-    const [image, setImage] = useState<HTMLImageElement | null>(null);
-    const [loadError, setLoadError] = useState(false);
+    // Initialize from global cache so the very first render already has the
+    // image — critical because StaticElementsLayer caches the Layer bitmap
+    // on the same frame.  If we waited for useEffect the cache would capture
+    // the placeholder instead of the actual image.
+    const [image, setImage] = useState<HTMLImageElement | null>(() => _imgCache.get(src) ?? null);
+    const [loadError, setLoadError] = useState(() => !src);
 
     // ── Live dimensions during transform ─────────────────────
     // During Transformer resize, we bake scaleX/scaleY into actual w/h so
@@ -49,12 +93,11 @@ const ImageShape: React.FC<Props> = ({
     // ── Load image from src ──────────────────────────────────
     useEffect(() => {
         if (!src) { setImage(null); setLoadError(true); return; }
-        const img = new window.Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => { setImage(img); setLoadError(false); };
-        img.onerror = () => { setImage(null); setLoadError(true); };
-        img.src = src;
-        return () => { img.onload = null; img.onerror = null; };
+        return cachedLoadImage(
+            src,
+            (img) => { setImage(img); setLoadError(false); },
+            () => { setImage(null); setLoadError(true); },
+        );
     }, [src]);
 
     // ── Drag handlers ────────────────────────────────────────
@@ -220,15 +263,19 @@ const ImageShape: React.FC<Props> = ({
             shadowBlur={isSelected ? 6 : 0}
             shadowOpacity={isSelected ? 0.5 : 0}
         >
-            {/* Background fill for fit mode (letterbox areas) */}
-            {scaleMode === 'fit' && (
-                <Rect
-                    width={rw}
-                    height={rh}
-                    fill={style.fillColor === 'transparent' ? undefined : style.fillColor}
-                    cornerRadius={cornerRadius}
-                />
-            )}
+            {/* Hit-target: transparent rect covering the full bounding box so
+                the Group always has a hit area for click/drag/select events.
+                Without this, stretch/fill modes have all children as
+                listening={false} and the Group becomes un-clickable. */}
+            <Rect
+                width={rw}
+                height={rh}
+                fill={scaleMode === 'fit'
+                    ? (style.fillColor === 'transparent' ? undefined : style.fillColor)
+                    : 'transparent'}
+                cornerRadius={cornerRadius}
+                perfectDrawEnabled={false}
+            />
 
             {/* The actual image */}
             <KonvaImage

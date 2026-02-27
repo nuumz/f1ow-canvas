@@ -13,6 +13,13 @@ export type {
 } from './FlowCanvasProps';
 export { DEFAULT_THEME } from './FlowCanvasProps';
 
+// Annotation types (for renderAnnotation prop)
+export type {
+    AnnotationContext,
+    AnnotationScreenBounds,
+    RenderAnnotationFn,
+} from '../components/Canvas/AnnotationsOverlay';
+
 // Element types
 export type {
     CanvasElement,
@@ -56,6 +63,9 @@ export { distance, normalizeRect, rotatePoint, isPointInRect, getDiamondPoints, 
 export { exportToDataURL, downloadPNG, exportToJSON, downloadJSON, exportToSVG, downloadSVG } from '../utils/export';
 export { drawArrowhead, arrowheadSize, flatToPoints } from '../utils/arrowheads';
 export { computeCurveControlPoint, quadBezierAt, quadBezierTangent, curveArrowPrev, CURVE_RATIO } from '../utils/curve';
+
+// Label metrics — shared constants & measurement for connector labels
+export { LABEL_PADDING_H, LABEL_PADDING_V, LABEL_CORNER, LABEL_LINE_HEIGHT, LABEL_MIN_WIDTH, measureLabelText, computePillSize } from '../utils/labelMetrics';
 
 // Element registry — custom type registration & validation
 export { elementRegistry, registerCustomElement } from '../utils/elementRegistry';

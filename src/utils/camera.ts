@@ -13,7 +13,7 @@ import { getElementAABB, type AABB } from './performance';
 // ─── Zoom Constants ───────────────────────────────────────────
 
 /** Predefined zoom steps for smooth discrete zooming */
-export const ZOOM_STEPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5] as const;
+export const ZOOM_STEPS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5] as const;
 
 /** Default animation duration in ms */
 export const DEFAULT_ANIMATION_DURATION = 280;

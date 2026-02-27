@@ -1,8 +1,10 @@
 /**
  * TextShape.tsx
  *
- * Editable text element following the Konva Editable Text pattern:
- *   https://konvajs.org/docs/sandbox/Editable_Text.html
+ * Standalone text element and shape-bound text (bound to rectangle,
+ * ellipse, diamond via `containerId`).
+ *
+ * For connector labels (text bound to arrows/lines), see TextLabel.tsx.
  *
  * Key behaviors:
  * - Double-click → open DOM textarea overlay (viewport-aware positioning)
@@ -13,15 +15,14 @@
  * - Supports receiving `autoEdit` flag for immediate editing on creation
  * - Bound text (containerId != null) centers inside parent shape
  */
-import React, { useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { Text } from 'react-konva';
 import type Konva from 'konva';
-import type { TextElement, CanvasElement, ArrowElement, LineElement } from '@/types';
-import { computeCurveControlPoint, quadBezierAt, CURVE_RATIO } from '@/utils/curve';
+import type { TextElement, CanvasElement } from '@/types';
 import { snapToGrid } from '@/utils/geometry';
+import { LABEL_LINE_HEIGHT } from '@/utils/labelMetrics';
 
-// ── Constants ─────────────────────────────────────────────────
-const LINE_HEIGHT = 1.18;
+const LINE_HEIGHT = LABEL_LINE_HEIGHT;
 
 interface Props {
     element: TextElement;
@@ -59,6 +60,11 @@ const TextShape: React.FC<Props> = ({
     const { id, x, y, width, height, rotation, style, text, containerId, textAlign, verticalAlign, isLocked } = element;
     const textRef = useRef<Konva.Text>(null);
     const isEditingRef = useRef(false);
+    // State-based editing flag — drives the `visible` prop so React-Konva
+    // keeps the text node hidden while the DOM textarea is active.
+    // The ref guards imperative code (openEditor/finishEdit); the state
+    // ensures every re-render computes `visible` correctly.
+    const [isEditingState, setIsEditingState] = useState(false);
     const autoEditDoneRef = useRef(false);
 
     // ── Resolve container position for bound text ─────────────
@@ -69,38 +75,10 @@ const TextShape: React.FC<Props> = ({
         return allElements.find(el => el.id === containerId) ?? null;
     }, [containerId, allElements]);
 
-    // Bound text position: centered inside the container or at midpoint for linear
+    // Bound text position: centered inside the shape container
     const boundPos = useMemo(() => {
         if (!container) return { x, y };
 
-        // ─── Arrow/Line container: position at midpoint ───────────
-        if (container.type === 'arrow' || container.type === 'line') {
-            const conn = container as ArrowElement | LineElement;
-            const pts = conn.points;
-            const startPt = { x: pts[0], y: pts[1] };
-            const endPt = { x: pts[pts.length - 2], y: pts[pts.length - 1] };
-
-            let midX: number, midY: number;
-            if (conn.lineType === 'curved') {
-                const cp = computeCurveControlPoint(startPt, endPt, (conn as ArrowElement).curvature ?? CURVE_RATIO);
-                const mid = quadBezierAt(startPt, cp, endPt, 0.5);
-                midX = conn.x + mid.x;
-                midY = conn.y + mid.y;
-            } else {
-                midX = conn.x + (startPt.x + endPt.x) / 2;
-                midY = conn.y + (startPt.y + endPt.y) / 2;
-            }
-
-            const textWidth = Math.max(80, width || 80);
-            const textHeight = textRef.current?.height() ?? height;
-            return {
-                x: midX - textWidth / 2,
-                y: midY - textHeight / 2,
-                width: textWidth,
-            };
-        }
-
-        // ─── Shape container: centered inside bounding box ────────
         const PADDING = 4;
         const cw = container.width - PADDING * 2;
         const textWidth = Math.max(20, cw);
@@ -108,8 +86,11 @@ const TextShape: React.FC<Props> = ({
         // Horizontal alignment
         const bx = container.x + PADDING;
 
-        // For vertical, compute from actual text height
-        const textActualHeight = textRef.current?.height() ?? height;
+        // Use stored height — NOT textRef.current?.height().
+        // textRef is null on remount (layer transition) and a ref inside
+        // useMemo is not reactive. Using the stored value keeps position
+        // stable across mount/unmount cycles and prevents flicker.
+        const textActualHeight = height;
         let by: number;
         if (verticalAlign === 'top') {
             by = container.y + PADDING;
@@ -121,7 +102,7 @@ const TextShape: React.FC<Props> = ({
         }
 
         return { x: bx, y: by, width: textWidth };
-    }, [container, x, y, height, verticalAlign]);
+    }, [container, x, y, width, height, verticalAlign]);
 
     // ── Measure and sync size from Konva Text node ────────────
     const syncSize = useCallback(() => {
@@ -138,7 +119,6 @@ const TextShape: React.FC<Props> = ({
         }
         // For standalone text, sync width to actual rendered text width
         if (!isBound) {
-            // Use getTextWidth() for exact text pixel width (not box constraint)
             const measuredWidth = Math.ceil(node.getTextWidth());
             if (Math.abs(measuredWidth - width) > 1) {
                 updates.width = measuredWidth;
@@ -151,10 +131,20 @@ const TextShape: React.FC<Props> = ({
         }
     }, [id, height, width, isBound, onChange]);
 
-    // Sync size when text/style changes
+    // Sync size when text/style changes.
+    // Skip the very first mount when the text element already has
+    // accurate dimensions (layer-transition remount). This prevents a
+    // spurious store update → re-render → flicker when moving between
+    // static and interactive layers.
+    const syncSizeInitRef = useRef(true);
     useEffect(() => {
-        // Delay to let Konva recalculate after prop changes
-        requestAnimationFrame(syncSize);
+        if (syncSizeInitRef.current) {
+            syncSizeInitRef.current = false;
+            // Fresh creation (empty text, height ≤ 0) still needs initial sync
+            if (text && height > 0) return;
+        }
+        const id = requestAnimationFrame(syncSize);
+        return () => cancelAnimationFrame(id);
     }, [text, style.fontSize, style.fontFamily, syncSize]);
 
     // ── Open textarea editor ──────────────────────────────────
@@ -166,6 +156,7 @@ const TextShape: React.FC<Props> = ({
         if (!stage) return;
 
         isEditingRef.current = true;
+        setIsEditingState(true);
         onEditStart?.(id);
 
         const stageContainer = stage.container();
@@ -185,8 +176,7 @@ const TextShape: React.FC<Props> = ({
         // Compensate by shifting textarea up by the half-leading amount.
         const halfLeading = screenFontSize * (LINE_HEIGHT - 1.07) / 2;
 
-        // ── Compute screen-space container bounds for bound text ──
-        // Use stage transform + container data directly (more robust than stage.findOne)
+        // ── Compute screen-space container bounds for shape-bound text ──
         let containerScreenLeft = 0;
         let containerScreenTop = 0;
         let containerScreenW = 0;
@@ -202,11 +192,11 @@ const TextShape: React.FC<Props> = ({
             containerScreenH = container.height * stageScaleX;
         }
 
-        // Width: bound text matches container exactly; standalone text has a comfortable minimum
+        // Width: bound text matches container; standalone text auto-grows
         const nodeWidth = textNode.width();
         const screenWidth = isBound
             ? (containerScreenW - PADDING_SCREEN * 2)
-            : Math.max(nodeWidth, 100) * stageScaleX;
+            : Math.max(nodeWidth, 60) * stageScaleX;
 
         // Left: bound text aligns to container left + padding
         const screenLeft = isBound
@@ -223,10 +213,7 @@ const TextShape: React.FC<Props> = ({
         textarea.value = text;
         textarea.style.position = 'absolute';
 
-        // Initial top/left:
-        // For bound text, derive from container bounds (not from Konva text node
-        // which may lag by 1 frame for newly created bound text).
-        // For standalone text, use the Konva text node's absolute position.
+        // Initial top/left
         if (isBound && container) {
             const vAlign = verticalAlign || 'middle';
             const textNodeH = textNode.height() * stageScaleX;
@@ -257,7 +244,7 @@ const TextShape: React.FC<Props> = ({
         textarea.style.overflow = 'hidden';
         textarea.style.background = 'transparent';
         textarea.style.zIndex = '1000';
-        textarea.rows = 1; // prevent default rows=2 causing 2-line height
+        textarea.rows = 1;
         textarea.style.minHeight = `${Math.max(20, screenFontSize * LINE_HEIGHT)}px`;
         textarea.style.boxSizing = 'border-box';
         textarea.style.transformOrigin = 'left top';
@@ -268,7 +255,6 @@ const TextShape: React.FC<Props> = ({
         const resolvedAlign = isBound ? (textAlign || 'center') : 'left';
         textarea.style.textAlign = resolvedAlign;
         if (isBound) {
-            // Bound text wraps words like Konva wrap='word'
             textarea.style.whiteSpace = 'pre-wrap';
             textarea.style.wordBreak = 'break-word';
         } else {
@@ -282,17 +268,13 @@ const TextShape: React.FC<Props> = ({
             textarea.style.transform = `rotateZ(${effectiveRotation}deg)`;
         }
 
-        // Auto-grow height as user types.
-        // For bound text with vertical alignment, re-position the textarea
-        // to stay aligned within the container — including halfLeading compensation.
+        // Auto-grow as user types
         const autoGrow = () => {
             textarea.style.height = 'auto';
             const newH = textarea.scrollHeight;
             textarea.style.height = `${newH}px`;
 
             if (isBound && container) {
-                // Re-position textarea vertically within container on screen
-                // Apply halfLeading offset so CSS text baseline matches Konva's textBaseline='top'
                 const vAlign = verticalAlign || 'middle';
                 let newTop: number;
                 if (vAlign === 'top') {
@@ -300,7 +282,6 @@ const TextShape: React.FC<Props> = ({
                 } else if (vAlign === 'bottom') {
                     newTop = containerScreenTop + containerScreenH - newH - PADDING_SCREEN - halfLeading;
                 } else {
-                    // middle
                     newTop = containerScreenTop + (containerScreenH - newH) / 2 - halfLeading;
                 }
                 textarea.style.top = `${newTop}px`;
@@ -309,7 +290,8 @@ const TextShape: React.FC<Props> = ({
             // For standalone text, also grow width
             if (!isBound) {
                 textarea.style.width = 'auto';
-                textarea.style.width = `${Math.max(textarea.scrollWidth, 100 * stageScaleX)}px`;
+                const minW = 100 * stageScaleX;
+                textarea.style.width = `${Math.max(textarea.scrollWidth, minW)}px`;
             }
         };
 
@@ -328,11 +310,11 @@ const TextShape: React.FC<Props> = ({
         const finishEdit = () => {
             if (!isEditingRef.current) return;
             isEditingRef.current = false;
+            setIsEditingState(false);
 
             const newText = cancelled ? originalText : textarea.value;
             const isEmpty = newText.trim() === '';
 
-            // Clean up DOM
             textarea.removeEventListener('input', autoGrow);
             textarea.removeEventListener('blur', handleBlur);
             textarea.removeEventListener('keydown', handleKeyDown);
@@ -340,39 +322,23 @@ const TextShape: React.FC<Props> = ({
                 textarea.parentNode.removeChild(textarea);
             }
 
-            // Show Konva text
             textNode.show();
             stage.batchDraw();
 
-            // Update element text (Konva will re-measure on next render)
             if (!cancelled) {
                 onChange(id, { text: newText });
             }
 
-            // Notify parent — decides whether to delete empty text
             onEditEnd?.(id, isEmpty);
         };
 
-        const handleBlur = () => {
-            finishEdit();
-        };
+        const handleBlur = () => finishEdit();
 
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Prevent keyboard shortcuts from firing while typing
             e.stopPropagation();
-
-            if (e.key === 'Escape') {
-                cancelled = true;
-                textarea.blur();
-            }
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                textarea.blur();
-            }
-            if (e.key === 'Tab') {
-                e.preventDefault();
-                textarea.blur();
-            }
+            if (e.key === 'Escape') { cancelled = true; textarea.blur(); }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); textarea.blur(); }
+            if (e.key === 'Tab') { e.preventDefault(); textarea.blur(); }
         };
 
         textarea.addEventListener('blur', handleBlur);
@@ -420,7 +386,7 @@ const TextShape: React.FC<Props> = ({
             wrap={isBound ? 'word' : 'none'}
             rotation={isBound ? (container?.rotation ?? rotation) : rotation}
             transformsEnabled={(isBound ? (container?.rotation ?? rotation) : rotation) ? 'all' : 'position'}
-            visible={!(autoEdit && !isEditingRef.current && !text)}
+            visible={!isEditingState && !(autoEdit && !text)}
             opacity={text ? style.opacity : (isBound ? 0 : 0.4)}
             draggable={isDraggable}
             listening={!isBound}

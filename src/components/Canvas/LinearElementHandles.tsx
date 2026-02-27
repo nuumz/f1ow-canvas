@@ -7,14 +7,15 @@
  * appear as smaller circles — clicking a midpoint inserts a new
  * point into the element at that position.
  */
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useMemo } from 'react';
 import { Circle, Group } from 'react-konva';
 import type Konva from 'konva';
-import type { ArrowElement, LineElement, Point, CanvasElement, SnapTarget, Binding } from '@/types';
+import type { ArrowElement, LineElement, TextElement, Point, CanvasElement, SnapTarget, Binding } from '@/types';
 import { useLinearEditStore } from '@/store/useLinearEditStore';
 import { findNearestSnapTarget, computeBindingGap } from '@/utils/connection';
 import { computeCurveControlPoint, quadBezierAt, curvatureFromDragPoint, CURVE_RATIO } from '@/utils/curve';
 import { computePointsBounds } from '@/utils/geometry';
+import { LABEL_PADDING_H, LABEL_PADDING_V, LABEL_MIN_WIDTH } from '@/utils/labelMetrics';
 
 // ── Visual constants ──────────────────────────────────────────
 const POINT_RADIUS = 4;
@@ -100,6 +101,27 @@ const LinearElementHandles: React.FC<Props> = ({
     const isCurved = 'lineType' in element && element.lineType === 'curved';
     const isElbow = 'lineType' in element && element.lineType === 'elbow';
     const endpointsOnly = isCurved || isElbow;
+
+    // ── Detect connector label bounding box ───────────────────
+    // When the connector has a bound text label, we hide midpoint/curve
+    // handles that would overlap the label area for a cleaner editing UX.
+    const labelRect = useMemo(() => {
+        if (!element.boundElements) return null;
+        for (const be of element.boundElements) {
+            if (be.type !== 'text') continue;
+            const txt = allElements.find(e => e.id === be.id) as TextElement | undefined;
+            if (!txt || !txt.text) continue; // no label to avoid
+            const textW = Math.max(LABEL_MIN_WIDTH, txt.width || 60);
+            const textH = txt.height || 30;
+            return {
+                x: txt.x - LABEL_PADDING_H,
+                y: txt.y - LABEL_PADDING_V,
+                w: textW + LABEL_PADDING_H * 2,
+                h: textH + LABEL_PADDING_V * 2,
+            };
+        }
+        return null;
+    }, [element.boundElements, allElements]);
 
     // ── Is this an endpoint? (index 0 or last) ────────────────
     const isEndpoint = useCallback(
@@ -373,6 +395,14 @@ const LinearElementHandles: React.FC<Props> = ({
                 pairs.slice(0, -1).map((pt, segIdx) => {
                     const next = pairs[segIdx + 1];
                     const mid = midpoint(pt, next);
+                    // Skip midpoint handles that overlap the connector label
+                    if (labelRect) {
+                        const wx = x + mid.x, wy = y + mid.y;
+                        if (wx >= labelRect.x && wx <= labelRect.x + labelRect.w &&
+                            wy >= labelRect.y && wy <= labelRect.y + labelRect.h) {
+                            return null;
+                        }
+                    }
                     const isHovered = hoveredMidpointIndex === segIdx;
                     return (
                         <Circle
@@ -435,6 +465,15 @@ const LinearElementHandles: React.FC<Props> = ({
                 const curvature = (element as LineElement | ArrowElement).curvature ?? CURVE_RATIO;
                 const cp = computeCurveControlPoint(localStart, localEnd, curvature);
                 const curveMid = quadBezierAt(localStart, cp, localEnd, 0.5);
+
+                // Hide curve handle when it overlaps the connector label
+                if (labelRect) {
+                    const wx = x + curveMid.x, wy = y + curveMid.y;
+                    if (wx >= labelRect.x && wx <= labelRect.x + labelRect.w &&
+                        wy >= labelRect.y && wy <= labelRect.y + labelRect.h) {
+                        return null;
+                    }
+                }
 
                 return (
                     <Circle

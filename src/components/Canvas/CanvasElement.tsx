@@ -8,6 +8,7 @@ import LineShape from '../shapes/LineShape';
 import ArrowShape from '../shapes/ArrowShape';
 import FreeDrawShape from '../shapes/FreeDrawShape';
 import TextShape from '../shapes/TextShape';
+import TextLabel from '../shapes/TextLabel';
 import ImageShape from '../shapes/ImageShape';
 
 // ─── LOD (Level of Detail) thresholds ─────────────────────────
@@ -100,7 +101,27 @@ const CanvasElementRenderer: React.FC<Props> = ({
             return <ArrowShape element={element} isSelected={isSelected} isEditing={isEditing} isGrouped={isGrouped} onSelect={onSelect} onChange={onChange} onDragMove={onDragMove} onDoubleClick={onDoubleClick} gridSnap={gridSnap} allElements={allElements} />;
         case 'freedraw':
             return <FreeDrawShape element={element} isSelected={isSelected} isGrouped={isGrouped} onSelect={onSelect} onChange={onChange} onDragMove={onDragMove} onDoubleClick={onDoubleClick} gridSnap={gridSnap} onDragSnap={onDragSnap} />;
-        case 'text':
+        case 'text': {
+            // Route connector labels to the dedicated TextLabel component
+            const connContainer = element.containerId && allElements
+                ? allElements.find(el => el.id === element.containerId)
+                : null;
+            const isConnectorLabel = connContainer &&
+                (connContainer.type === 'arrow' || connContainer.type === 'line');
+
+            if (isConnectorLabel) {
+                return (
+                    <TextLabel
+                        element={element}
+                        connector={connContainer as import('../../types').ArrowElement | import('../../types').LineElement}
+                        onChange={onChange}
+                        autoEdit={autoEditText}
+                        onEditStart={onTextEditStart}
+                        onEditEnd={onTextEditEnd}
+                    />
+                );
+            }
+
             return (
                 <TextShape
                     element={element}
@@ -116,6 +137,7 @@ const CanvasElementRenderer: React.FC<Props> = ({
                     gridSnap={gridSnap}
                 />
             );
+        }
         case 'image':
             return <ImageShape element={element} isSelected={isSelected} isGrouped={isGrouped} onSelect={onSelect} onChange={onChange} onDragMove={onDragMove} onDoubleClick={onDoubleClick} gridSnap={gridSnap} onDragSnap={onDragSnap} />;
         default:

@@ -4,6 +4,7 @@ import { useCanvasStore } from '../../store/useCanvasStore';
 import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS, FREEHAND_STYLES } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
 import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
+import { openImageFilePicker, fileToDataURL, loadImage } from '../../utils/image';
 import { PanelButton, PanelTextButton, PanelSection, ButtonRow, CompactDropdownPicker } from './ui';
 
 interface Props {
@@ -182,34 +183,7 @@ const SvgIcon: React.FC<{ children: React.ReactNode; color: string; size?: numbe
     </svg>
 );
 
-// ─── Layer & Action Icons ─────────────────────────────────────
-const LayerIcons = {
-    sendToBack: (color: string) => (
-        <SvgIcon color={color}>
-            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-            <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" opacity="0.3" />
-            <polyline points="12 12 12 18" /><polyline points="9 15 12 18 15 15" />
-        </SvgIcon>
-    ),
-    sendBackward: (color: string) => (
-        <SvgIcon color={color}>
-            <line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />
-        </SvgIcon>
-    ),
-    bringForward: (color: string) => (
-        <SvgIcon color={color}>
-            <line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" />
-        </SvgIcon>
-    ),
-    bringToFront: (color: string) => (
-        <SvgIcon color={color}>
-            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-            <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" opacity="0.3" />
-            <polyline points="12 18 12 12" /><polyline points="9 15 12 12 15 15" />
-        </SvgIcon>
-    ),
-};
-
+// ─── Action Icons ─────────────────────────────────────────────
 const ActionIcons = {
     duplicate: (color: string) => (
         <SvgIcon color={color}>
@@ -253,10 +227,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
     const toggleLockElements = useCanvasStore((s) => s.toggleLockElements);
     const deleteElements = useCanvasStore((s) => s.deleteElements);
     const duplicateElements = useCanvasStore((s) => s.duplicateElements);
-    const bringToFront = useCanvasStore((s) => s.bringToFront);
-    const sendToBack = useCanvasStore((s) => s.sendToBack);
-    const bringForward = useCanvasStore((s) => s.bringForward);
-    const sendBackward = useCanvasStore((s) => s.sendBackward);
+
     const activeTool = useCanvasStore((s) => s.activeTool);
     const currentLineType = useCanvasStore((s) => s.currentLineType);
     const setCurrentLineType = useCanvasStore((s) => s.setCurrentLineType);
@@ -791,30 +762,24 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                         <PanelTextButton
                             theme={theme}
                             style={{ width: '100%', padding: '5px 0', borderRadius: 4 }}
-                            onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = 'image/*';
-                                input.onchange = async () => {
-                                    const file = input.files?.[0];
-                                    if (!file) return;
-                                    const reader = new FileReader();
-                                    reader.onload = () => {
-                                        const dataURL = reader.result as string;
-                                        const img = new window.Image();
-                                        img.onload = () => {
-                                            updateElement(selectedImage.id, {
-                                                src: dataURL,
-                                                naturalWidth: img.naturalWidth,
-                                                naturalHeight: img.naturalHeight,
-                                            } as Partial<ImageElement>);
-                                            pushHistory();
-                                        };
-                                        img.src = dataURL;
-                                    };
-                                    reader.readAsDataURL(file);
-                                };
-                                input.click();
+                            onClick={async () => {
+                                // Capture ID before async gap (selectedImage may become stale)
+                                const targetId = selectedImage.id;
+                                try {
+                                    const files = await openImageFilePicker();
+                                    const file = files[0];
+                                    if (!file) return; // user cancelled
+                                    const dataURL = await fileToDataURL(file);
+                                    const img = await loadImage(dataURL);
+                                    updateElement(targetId, {
+                                        src: dataURL,
+                                        naturalWidth: img.naturalWidth,
+                                        naturalHeight: img.naturalHeight,
+                                    } as Partial<ImageElement>);
+                                    pushHistory();
+                                } catch {
+                                    // Image load failed — silently ignore
+                                }
                             }}
                         >
                             Replace Image…
@@ -823,34 +788,10 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                 </>
             )}
 
-            {/* ════════ Layers ════════ */}
+            {/* ════════ Actions ════════ */}
             {hasSelection && (
                 <>
                     <hr style={dividerStyle} />
-                    <PanelSection label="Layers" theme={theme}>
-                        <ButtonRow columns={4}>
-                            {([
-                                { fn: sendToBack, icon: LayerIcons.sendToBack, tip: 'Send to back' },
-                                { fn: sendBackward, icon: LayerIcons.sendBackward, tip: 'Send backward' },
-                                { fn: bringForward, icon: LayerIcons.bringForward, tip: 'Bring forward' },
-                                { fn: bringToFront, icon: LayerIcons.bringToFront, tip: 'Bring to front' },
-                            ] as const).map(({ fn, icon, tip }) => (
-                                <PanelButton
-                                    key={tip}
-                                    variant="action"
-                                    theme={theme}
-                                    title={tip}
-                                    width="100%"
-                                    height={32}
-                                    onClick={() => { fn(selectedIds); pushHistory(); }}
-                                >
-                                    {(hl) => icon(hl ? theme.activeToolColor : theme.textColor)}
-                                </PanelButton>
-                            ))}
-                        </ButtonRow>
-                    </PanelSection>
-
-                    {/* ════════ Actions ════════ */}
                     <PanelSection label="Actions" theme={theme}>
                         <ButtonRow columns={4}>
                             <PanelButton
