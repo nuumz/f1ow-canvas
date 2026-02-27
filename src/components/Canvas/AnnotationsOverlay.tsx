@@ -81,16 +81,22 @@ const AnnotationItem: React.FC<AnnotationItemProps> = React.memo(({
     const annotation = renderAnnotation(ctx);
     if (!annotation) return null;
 
+    // Build CSS transform: always include scale(viewport.scale) so that
+    // content inside the wrapper lives in world-space and scales naturally
+    // with zoom.  Append rotation when present.
+    const transforms: string[] = [`scale(${viewport.scale})`];
+    if (el.rotation) transforms.push(`rotate(${el.rotation}deg)`);
+
     return (
         <div
             style={{
                 position: 'absolute',
                 left: screenX,
                 top: screenY,
-                width: screenW,
-                height: screenH,
+                width: el.width,    // world-space; CSS scale handles screen sizing
+                height: el.height,  // world-space
                 pointerEvents: 'none',
-                transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+                transform: transforms.join(' '),
                 transformOrigin: 'top left',
             }}
         >

@@ -90,27 +90,25 @@ const DemoApp: React.FC = () => {
                             return null;
                         }
 
-                        // Zoom-independent badge base style
+                        // Badge scales naturally with element (world-space)
                         const badge: React.CSSProperties = {
                             position: 'absolute',
-                            top: -6,
-                            right: -6,
+                            top: -10,
+                            right: -10,
                             pointerEvents: 'auto',
                             borderRadius: '50%',
-                            minWidth: 18,
-                            height: 18,
+                            minWidth: 22,
+                            height: 22,
                             padding: '0 4px',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            fontSize: 10,
+                            fontSize: 12,
                             fontWeight: 600,
                             fontFamily: 'system-ui, sans-serif',
                             lineHeight: 1,
                             cursor: 'pointer',
                             boxShadow: '0 1px 3px rgba(0,0,0,.15)',
-                            transform: `scale(${1 / scale})`,
-                            transformOrigin: 'top right',
                         };
 
                         return (

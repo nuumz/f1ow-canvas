@@ -78,7 +78,7 @@ export function createImageElement(
         width: dims.width,
         height: dims.height,
         rotation: 0,
-        style: { ...style, fillColor: 'transparent' },
+        style: { ...style, fillColor: 'transparent', strokeColor: 'transparent', strokeWidth: 0 },
         isLocked: false,
         isVisible: true,
         boundElements: null,

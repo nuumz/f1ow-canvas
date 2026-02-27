@@ -861,7 +861,6 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
             // Calculate drop position in canvas coordinates
             const rect = container.getBoundingClientRect();
-            const stage = stageRef.current;
             const vp = useCanvasStore.getState().viewport;
             const dropX = (e.clientX - rect.left - vp.x) / vp.scale;
             const dropY = (e.clientY - rect.top - vp.y) / vp.scale;
@@ -1179,7 +1178,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             const pointer = stage.getPointerPosition();
             if (!pointer) return;
 
-            const scaleBy = 1.05;
+            const scaleBy = 1.02;
             const dir = e.evt.deltaY > 0 ? -1 : 1;
             const targetScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM,
                 dir > 0 ? viewport.scale * scaleBy : viewport.scale / scaleBy
