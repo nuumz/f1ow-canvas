@@ -1,7 +1,7 @@
 import React, { useRef, useState, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FlowCanvas } from './lib';
-import type { FlowCanvasRef, CanvasElement } from './lib';
+import type { FlowCanvasRef, CanvasElement, ContextMenuItem, ContextMenuContext } from './lib';
 
 /**
  * Demo App — shows how to use <FlowCanvas> as a reusable component.
@@ -9,6 +9,8 @@ import type { FlowCanvasRef, CanvasElement } from './lib';
 const DemoApp: React.FC = () => {
     const canvasRef = useRef<FlowCanvasRef>(null);
     const [elementCount, setElementCount] = useState(0);
+    /** Set of element IDs that have an annotation badge */
+    const [annotatedIds, setAnnotatedIds] = useState<Set<string>>(new Set());
 
     const handleChange = useCallback((elements: CanvasElement[]) => {
         setElementCount(elements.length);
@@ -84,11 +86,35 @@ const DemoApp: React.FC = () => {
                     theme={{
                         canvasBackground: '#fafafa',
                     }}
-                    renderAnnotation={({ element: el, scale }) => {
-                        // Skip connectors and text — annotate shapes only
-                        if (el.type === 'line' || el.type === 'arrow' || el.type === 'text' || el.type === 'freedraw') {
-                            return null;
-                        }
+                    contextMenuItems={(ctx: ContextMenuContext) => {
+                        // Only offer annotation toggle when exactly one shape is selected
+                        if (ctx.selectedIds.length !== 1) return [];
+                        const el = ctx.elements.find(e => e.id === ctx.selectedIds[0]);
+                        if (!el) return [];
+                        // Skip connectors / text / freedraw — only shapes
+                        if (['line', 'arrow', 'text', 'freedraw'].includes(el.type)) return [];
+
+                        const id = el.id;
+                        const isAnnotated = annotatedIds.has(id);
+
+                        return [{
+                            label: isAnnotated ? 'Remove Annotation' : 'Add Annotation',
+                            shortcut: '',
+                            divider: true,
+                            action: () => {
+                                setAnnotatedIds(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(id)) next.delete(id);
+                                    else next.add(id);
+                                    return next;
+                                });
+                                ctx.close();
+                            },
+                        }];
+                    }}
+                    renderAnnotation={({ element: el }) => {
+                        // Only render badges for elements explicitly annotated via context menu
+                        if (!annotatedIds.has(el.id)) return null;
 
                         // Badge scales naturally with element (world-space)
                         const badge: React.CSSProperties = {

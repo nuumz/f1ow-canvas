@@ -35,7 +35,6 @@ import {
     findConnectorsForElement,
     syncBoundElements,
     computeConnectorLabelPosition,
-    syncConnectorLabels,
 } from '../utils/connection';
 import { MIN_ZOOM, MAX_ZOOM, DEFAULT_STYLE, TOOLS, GRID_SIZE } from '../constants';
 import { animateViewport, zoomAtPoint } from '../utils/camera';
@@ -74,6 +73,7 @@ import {
     resolveImageSource,
     getImageFilesFromDataTransfer,
 } from '../utils/image';
+import { syncAfterDrag, computeBoundTextPosition, BOUND_TEXT_PADDING, CONTAINER_TYPES } from '../utils/dragSync';
 
 import type { FlowCanvasProps, FlowCanvasRef, ContextMenuContext } from './FlowCanvasProps';
 import { DEFAULT_THEME } from './FlowCanvasProps';
@@ -639,6 +639,28 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 }
             }
 
+            // ── Expand bound connectors: promote connectors bound to selected shapes ──
+            // When a shape is selected and being dragged, any connector (arrow/line)
+            // bound to it must move to the interactive layer as well. Otherwise the
+            // connector stays on the bitmap-cached static layer and lags behind /
+            // flickers because the static bitmap must clear-cache + re-render each frame.
+            for (const el of visibleElements) {
+                if (el.type !== 'line' && el.type !== 'arrow') continue;
+                if (expanded.has(el.id)) continue; // already promoted
+                const conn = el as LineElement | ArrowElement;
+                const startBound = conn.startBinding?.elementId;
+                const endBound = conn.endBinding?.elementId;
+                if ((startBound && expanded.has(startBound)) || (endBound && expanded.has(endBound))) {
+                    expanded.add(el.id);
+                    // Also promote bound text labels on this connector
+                    if (el.boundElements) {
+                        for (const be of el.boundElements) {
+                            if (be.type === 'text') expanded.add(be.id);
+                        }
+                    }
+                }
+            }
+
             if (expanded.size !== effectiveSelected.size) {
                 effectiveSelected = expanded;
             }
@@ -1188,13 +1210,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         [viewport, setViewport]
     );
 
-    const handleStageDragEnd = useCallback(
+    const handleStageDragMove = useCallback(
         (e: Konva.KonvaEventObject<DragEvent>) => {
             if (activeTool !== 'hand' && !spaceKeyRef.current && !isSpacePanning) return;
             setViewport({ x: e.target.x(), y: e.target.y() });
         },
         [activeTool, setViewport, isSpacePanning]
     );
+
+    // Both onDragMove and onDragEnd need the same handler — reuse the reference
+    const handleStageDragEnd = handleStageDragMove;
 
     const handleElementSelect = useCallback(
         (id: string) => {
@@ -1283,9 +1308,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     const syncBoundTextNodes = useCallback(
         (el: CanvasElementType, newX: number, newY: number, newW?: number, newH?: number) => {
             if (!el.boundElements || !stageRef.current) return;
-            if (!['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) return;
+            if (!CONTAINER_TYPES.has(el.type)) return;
             const elements = useCanvasStore.getState().elements;
-            const PADDING = 4;
             const shapeW = newW ?? el.width;
             const shapeH = newH ?? el.height;
             for (const be of el.boundElements) {
@@ -1295,17 +1319,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 const textNode = stageRef.current.findOne('#' + be.id);
                 if (!textNode) continue;
                 const textNodeH = (textNode as any).height?.() ?? txt.height;
-                // Width follows container
-                const tw = Math.max(20, shapeW - PADDING * 2);
-                (textNode as any).width?.(tw);
-                // X
-                textNode.x(newX + PADDING);
-                // Y — vertical alignment
-                let newTY: number;
-                if (txt.verticalAlign === 'top') newTY = newY + PADDING;
-                else if (txt.verticalAlign === 'bottom') newTY = newY + shapeH - textNodeH - PADDING;
-                else newTY = newY + (shapeH - textNodeH) / 2;
-                textNode.y(newTY);
+                const pos = computeBoundTextPosition(
+                    { x: newX, y: newY, width: shapeW, height: shapeH },
+                    { height: textNodeH, verticalAlign: txt.verticalAlign },
+                );
+                (textNode as any).width?.(pos.width);
+                textNode.x(pos.x);
+                textNode.y(pos.y);
             }
         },
         []
@@ -1448,67 +1468,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         setAlignGuides([]);
 
         // ─── Post-update: connector + bound text sync ─────────
-        // Build O(1) element lookup once (avoids N² .find() calls).
-        // Track recomputed connector IDs to avoid duplicates when
-        // two adjacent shapes share the same connector.
         const freshElements = useCanvasStore.getState().elements;
-        const elMap = new Map<string, CanvasElementType>();
-        for (const el of freshElements) elMap.set(el.id, el);
+        const movedIds = entries.map(([id]) => id);
+        for (const id of movedIds) unboundConnectorIdsRef.current.delete(id);
 
-        const connectorUpdates: Array<{ id: string; updates: Partial<CanvasElementType> }> = [];
-        const processedConnectors = new Set<string>();
-
-        for (const [id] of entries) {
-            unboundConnectorIdsRef.current.delete(id);
-
-            // Connector recomputation (deduplicated)
-            const connectors = findConnectorsForElement(id, freshElements);
-            for (const conn of connectors) {
-                if (processedConnectors.has(conn.id)) continue;
-                processedConnectors.add(conn.id);
-                const freshConn = elMap.get(conn.id) as LineElement | ArrowElement | undefined;
-                if (!freshConn) continue;
-                const recomputed = recomputeBoundPoints(freshConn, freshElements);
-                if (recomputed) connectorUpdates.push({ id: freshConn.id, updates: recomputed });
-            }
-
-            // Bound text sync (shape containers)
-            const el = elMap.get(id);
-            if (el?.boundElements && ['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) {
-                const PADDING = 4;
-                for (const be of el.boundElements) {
-                    if (be.type !== 'text') continue;
-                    const txt = elMap.get(be.id) as TextElement | undefined;
-                    if (!txt) continue;
-                    const tw = Math.max(20, el.width - PADDING * 2);
-                    let ty: number;
-                    if (txt.verticalAlign === 'top') ty = el.y + PADDING;
-                    else if (txt.verticalAlign === 'bottom') ty = el.y + el.height - txt.height - PADDING;
-                    else ty = el.y + (el.height - txt.height) / 2;
-                    connectorUpdates.push({ id: be.id, updates: { x: el.x + PADDING, y: ty, width: tw } });
-                }
-            }
-        }
-
-        // ─── Sync connector-bound text labels ─────────────────
-        // After connector recomputation, labels must follow the new midpoints.
-        // Re-read fresh elements to include connector position updates above.
-        if (processedConnectors.size > 0) {
-            // Refresh elMap with connector updates applied
-            if (connectorUpdates.length > 0) {
-                useCanvasStore.getState().batchUpdateElements(connectorUpdates);
-                connectorUpdates.length = 0; // already applied
-                const refreshed = useCanvasStore.getState().elements;
-                elMap.clear();
-                for (const el of refreshed) elMap.set(el.id, el);
-            }
-            const labelUpdates = syncConnectorLabels(processedConnectors, elMap as Map<string, CanvasElementType>);
-            for (const lu of labelUpdates) connectorUpdates.push(lu as { id: string; updates: Partial<CanvasElementType> });
-        }
-
-        // Apply all remaining connector/text updates in a single batch
-        if (connectorUpdates.length > 0) {
-            useCanvasStore.getState().batchUpdateElements(connectorUpdates);
+        const { updates: syncUpdates } = syncAfterDrag(movedIds, freshElements);
+        if (syncUpdates.length > 0) {
+            useCanvasStore.getState().batchUpdateElements(syncUpdates);
         }
 
         // Single history push for the entire drag operation
@@ -1542,9 +1508,6 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
 
             updateElement(id, updates);
-            if (Object.prototype.hasOwnProperty.call(updates, 'text')) {
-                useCanvasStore.getState().pushHistory();
-            }
 
             // Clear alignment guides on drag end
             setAlignGuides([]);
@@ -1552,70 +1515,27 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             // Clear unbind tracking for dragged connectors
             unboundConnectorIdsRef.current.delete(id);
 
-            // Build fresh element list & O(1) Map for subsequent lookups
-            // (avoids repeated .find() calls which are O(n) each)
+            // ─── Post-update: connector + bound text sync ─────────
             const freshElements = useCanvasStore.getState().elements;
-            const elMap = new Map<string, CanvasElementType>();
-            for (const e of freshElements) elMap.set(e.id, e);
-
-            // Persist final connector points on drag-end (for serialization)
-            const updatedConnectorIds: string[] = [];
-            const connectors = findConnectorsForElement(id, freshElements);
-            for (const conn of connectors) {
-                const freshConn = elMap.get(conn.id) as LineElement | ArrowElement | undefined;
-                if (!freshConn) continue;
-                const recomputed = recomputeBoundPoints(freshConn, freshElements);
-                if (recomputed) {
-                    updateElement(freshConn.id, recomputed);
-                    updatedConnectorIds.push(freshConn.id);
-                }
-            }
-
-            // ─── Sync connector-bound text labels ─────────────
-            if (updatedConnectorIds.length > 0) {
-                const refreshedEls = useCanvasStore.getState().elements;
-                const refreshedMap = new Map<string, CanvasElementType>();
-                for (const e of refreshedEls) refreshedMap.set(e.id, e);
-                const labelUpdates = syncConnectorLabels(updatedConnectorIds, refreshedMap as Map<string, CanvasElementType>);
-                for (const lu of labelUpdates) updateElement(lu.id, lu.updates);
-            }
-
-            // ─── Sync bound text stored coords when shape container changes ──
-            const el = elMap.get(id);
-            if (el?.boundElements && ['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) {
-                const PADDING = 4;
-                for (const be of el.boundElements) {
-                    if (be.type !== 'text') continue;
-                    const txt = elMap.get(be.id) as TextElement | undefined;
-                    if (!txt) continue;
-                    const tw = Math.max(20, el.width - PADDING * 2);
-                    let ty: number;
-                    if (txt.verticalAlign === 'top') ty = el.y + PADDING;
-                    else if (txt.verticalAlign === 'bottom') ty = el.y + el.height - txt.height - PADDING;
-                    else ty = el.y + (el.height - txt.height) / 2;
-                    updateElement(be.id, { x: el.x + PADDING, y: ty, width: tw });
-                }
-            }
+            const { updates: syncUpdates } = syncAfterDrag([id], freshElements);
+            for (const su of syncUpdates) updateElement(su.id, su.updates);
 
             // ─── Auto-resize container height when bound text grows ──────────
+            const elMap = new Map<string, CanvasElementType>();
+            for (const e of useCanvasStore.getState().elements) elMap.set(e.id, e);
+            const el = elMap.get(id);
             if (el?.type === 'text') {
                 const txt = el as TextElement;
                 if (txt.containerId) {
                     const ctr = elMap.get(txt.containerId);
-                    if (ctr && ['rectangle', 'ellipse', 'diamond', 'image'].includes(ctr.type)) {
-                        const PADDING = 4;
-                        const minH = txt.height + PADDING * 2;
+                    if (ctr && CONTAINER_TYPES.has(ctr.type)) {
+                        const minH = txt.height + BOUND_TEXT_PADDING * 2;
                         if (ctr.height < minH) {
                             updateElement(ctr.id, { height: minH });
                             // Recompute connectors for the resized container
-                            // (refresh elements after updateElement above)
                             const updatedElements = useCanvasStore.getState().elements;
-                            for (const c of findConnectorsForElement(ctr.id, updatedElements)) {
-                                const fc = updatedElements.find(e => e.id === c.id) as LineElement | ArrowElement | undefined;
-                                if (!fc) continue;
-                                const r = recomputeBoundPoints(fc, updatedElements);
-                                if (r) updateElement(fc.id, r);
-                            }
+                            const { updates: resizeSync } = syncAfterDrag([ctr.id], updatedElements);
+                            for (const su of resizeSync) updateElement(su.id, su.updates);
                         }
                     }
                 }
@@ -1658,62 +1578,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
             // ─── Post-update: connector + bound text sync ─────────
             const freshElements = useCanvasStore.getState().elements;
-            const elMap = new Map<string, CanvasElementType>();
-            for (const el of freshElements) elMap.set(el.id, el);
-
             const memberIds = new Set(members.map(m => m.id));
-            const connectorUpdates: Array<{ id: string; updates: Partial<CanvasElementType> }> = [];
-            const processedConnectors = new Set<string>();
-
-            for (const member of members) {
-                // Recompute connectors attached to moved shapes (deduplicated)
-                const connectors = findConnectorsForElement(member.id, freshElements);
-                for (const conn of connectors) {
-                    if (processedConnectors.has(conn.id)) continue;
-                    processedConnectors.add(conn.id);
-                    // Skip connectors that are INSIDE the group (they already moved)
-                    if (memberIds.has(conn.id)) continue;
-                    const freshConn = elMap.get(conn.id) as LineElement | ArrowElement | undefined;
-                    if (!freshConn) continue;
-                    const recomputed = recomputeBoundPoints(freshConn, freshElements);
-                    if (recomputed) connectorUpdates.push({ id: freshConn.id, updates: recomputed });
-                }
-
-                // Sync bound text positions (shape containers)
-                const el = elMap.get(member.id);
-                if (el?.boundElements && ['rectangle', 'ellipse', 'diamond', 'image'].includes(el.type)) {
-                    const PADDING = 4;
-                    for (const be of el.boundElements) {
-                        if (be.type !== 'text') continue;
-                        // Skip if bound text is also in the group (already moved)
-                        if (memberIds.has(be.id)) continue;
-                        const txt = elMap.get(be.id) as TextElement | undefined;
-                        if (!txt) continue;
-                        const tw = Math.max(20, el.width - PADDING * 2);
-                        let ty: number;
-                        if (txt.verticalAlign === 'top') ty = el.y + PADDING;
-                        else if (txt.verticalAlign === 'bottom') ty = el.y + el.height - txt.height - PADDING;
-                        else ty = el.y + (el.height - txt.height) / 2;
-                        connectorUpdates.push({ id: be.id, updates: { x: el.x + PADDING, y: ty, width: tw } });
-                    }
-                }
-            }
-
-            // ─── Sync connector-bound text labels ─────────────────
-            if (processedConnectors.size > 0) {
-                if (connectorUpdates.length > 0) {
-                    useCanvasStore.getState().batchUpdateElements(connectorUpdates);
-                    connectorUpdates.length = 0;
-                    const refreshed = useCanvasStore.getState().elements;
-                    elMap.clear();
-                    for (const el of refreshed) elMap.set(el.id, el);
-                }
-                const labelUpdates = syncConnectorLabels(processedConnectors, elMap as Map<string, CanvasElementType>);
-                for (const lu of labelUpdates) connectorUpdates.push(lu as { id: string; updates: Partial<CanvasElementType> });
-            }
-
-            if (connectorUpdates.length > 0) {
-                useCanvasStore.getState().batchUpdateElements(connectorUpdates);
+            const { updates: syncUpdates } = syncAfterDrag(
+                memberIds,
+                freshElements,
+                memberIds, // skip group-internal connectors & text (already moved)
+            );
+            if (syncUpdates.length > 0) {
+                useCanvasStore.getState().batchUpdateElements(syncUpdates);
             }
 
             store.pushHistory();
@@ -2011,6 +1883,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     );
 
     const contextMenuItems: ContextMenuItem[] = useMemo(() => {
+        // Skip expensive item computation when the menu is closed
+        if (!contextMenu) return [];
+
         const hasSelection = selectedIds.length > 0;
         const isMac = navigator.platform.includes('Mac');
         const mod = isMac ? '⌘' : 'Ctrl+';
@@ -2338,6 +2213,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
                     onWheel={handleWheel}
+                    onDragMove={handleStageDragMove}
                     onDragEnd={handleStageDragEnd}
                     onTouchStart={handleMouseDown}
                     onTouchMove={handleMouseMove}
