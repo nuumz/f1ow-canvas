@@ -446,6 +446,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // multi-selection before the context menu opens.
     const isRightClickRef = useRef(false);
 
+    // Cross-layer double-click tracking.
+    // When an unselected shape is clicked, React moves it from the Static
+    // Layer to the Interactive Layer — destroying the Konva node.  The
+    // second click lands on a *new* node, so Konva's built-in dblclick
+    // never fires.  We track the last click (element id + timestamp)
+    // manually so handleElementSelect can detect this scenario and
+    // forward it to handleElementDoubleClick.
+    const lastClickRef = useRef<{ id: string; time: number } | null>(null);
+    const dblClickHandlerRef = useRef<((id: string) => void) | null>(null);
+
     // Space key tracking (hold Space + drag to pan)
     const [isSpacePanning, setIsSpacePanning] = useState(false);
     const spaceKeyRef = useRef(false);
@@ -578,6 +588,11 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         isLinearDragging &&
         linearEditElement?.lineType === 'elbow'
     );
+
+    // Ref keeps the latest resolved map accessible from stable callbacks
+    // (e.g. handleElementDoubleClick) without adding it to their deps.
+    const resolvedMapRef = useRef(resolvedElementMap);
+    resolvedMapRef.current = resolvedElementMap;
 
     // ─── Performance: viewport culling for large flows ────────
     // Only render elements visible in the current viewport.
@@ -1250,6 +1265,25 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 return;
             }
 
+            // ── Cross-layer double-click detection ────────────────────────
+            // When clicking an element that was NOT selected, it moves from the
+            // Static Layer to the Interactive Layer — the underlying Konva node
+            // is destroyed and re-created. Konva tracks dblclick per-node, so
+            // the second click on the new node cannot trigger a native dblclick.
+            // Detect the rapid second click here and forward it manually.
+            const now = Date.now();
+            const last = lastClickRef.current;
+            const wasAlreadySelected = currentSelectedIds.includes(id);
+            if (last && last.id === id && (now - last.time) < 400 && !wasAlreadySelected) {
+                // This is the second click within the dblclick window on a
+                // shape that just transitioned layers. Fire double-click.
+                lastClickRef.current = null;
+                dblClickHandlerRef.current?.(id);
+                return; // selection was already set by the first click
+            }
+            // Record this click for future dblclick detection
+            lastClickRef.current = { id, time: now };
+
             // Synchronous enter/exit linear edit mode — avoids 1-frame
             // flash of SelectionTransformer on line/arrow elements.
             const el = elements.find(e => e.id === id);
@@ -1622,6 +1656,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // ─── Double-click: linear edit OR create bound text ─────────
     const handleElementDoubleClick = useCallback(
         (id: string) => {
+            // Clear cross-layer click tracking — a real dblclick arrived,
+            // no need to fire again from the select handler.
+            lastClickRef.current = null;
             if (readOnly) return;
             const { activeTool: tool, elements: els, currentStyle: style,
                     addElement: add, updateElement: update, setSelectedIds: setSel,
@@ -1650,9 +1687,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     return;
                 }
 
-                // Create new bound text at midpoint
+                // Create new bound text at midpoint.
+                // Use the RESOLVED connector (with recomputed bound points)
+                // rather than the raw store element.  When a connector has
+                // start/end bindings, recomputeBoundPoints adjusts its x/y
+                // and points during render.  The store still holds the old
+                // values, so computing the midpoint from the store element
+                // gives a stale position that doesn't match the visual.
                 const textId = generateId();
-                const conn = el as LineElement | ArrowElement;
+                const resolved = resolvedMapRef.current.get(id) as LineElement | ArrowElement | undefined;
+                const conn = (resolved ?? el) as LineElement | ArrowElement;
                 const labelPos = computeConnectorLabelPosition(conn, 100, 30);
 
                 const textEl: TextElement = {
@@ -1741,6 +1785,10 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         },
         [readOnly, onElementDoubleClick, onElementCreate],
     );
+
+    // Keep the ref in sync so handleElementSelect can call it without
+    // a circular useCallback dependency.
+    dblClickHandlerRef.current = handleElementDoubleClick;
 
     // ─── Linear Edit: point changes (with history push) ──────
     const handleLinearPointsChange = useCallback(

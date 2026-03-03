@@ -60,6 +60,48 @@ export function measureLabelText(
 }
 
 /**
+ * Compute the CSS half-leading offset for a given font.
+ *
+ * Konva renders text with `textBaseline='top'` — the glyph top aligns
+ * with the node's y position (no leading above).
+ * CSS distributes leading equally above and below the content area
+ * within each line box.  The half-leading is the space ABOVE the glyphs
+ * that CSS adds but Konva does not.
+ *
+ * To align a DOM textarea's visible text with Konva's rendered text,
+ * shift the textarea UP by this amount (in canvas-space pixels).
+ *
+ * Uses `fontBoundingBoxAscent/Descent` for accurate per-font measurement
+ * with a safe fallback for older browsers.
+ *
+ * @param fontSize   - Font size in canvas-space pixels
+ * @param fontFamily - CSS font-family string
+ * @param lineHeight - Line-height multiplier (default: LABEL_LINE_HEIGHT)
+ * @returns Half-leading in canvas-space pixels (≥ 0)
+ */
+export function computeHalfLeading(
+    fontSize: number,
+    fontFamily: string,
+    lineHeight: number = LABEL_LINE_HEIGHT,
+): number {
+    const ctx = getMeasureCtx();
+    ctx.font = `${fontSize}px ${fontFamily}`;
+    const m = ctx.measureText('Mg');
+
+    // fontBoundingBox* gives the font's actual content-area height,
+    // which varies by typeface (e.g. Arial ≈ 1.15em, Segoe UI ≈ 1.12em).
+    let contentAreaHeight: number;
+    if (m.fontBoundingBoxAscent !== undefined && m.fontBoundingBoxDescent !== undefined) {
+        contentAreaHeight = m.fontBoundingBoxAscent + m.fontBoundingBoxDescent;
+    } else {
+        // Fallback: assume content area ≈ 1.15× fontSize (common for sans-serif)
+        contentAreaHeight = fontSize * 1.15;
+    }
+
+    return Math.max(0, (lineHeight * fontSize - contentAreaHeight) / 2);
+}
+
+/**
  * Compute the full pill (background rect) dimensions for a connector label.
  *
  * @param textWidth  - Measured text content width (from `measureLabelText`)
