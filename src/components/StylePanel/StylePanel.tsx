@@ -5,6 +5,7 @@ import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES,
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
 import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
 import { openImageFilePicker, fileToDataURL, loadImage } from '../../utils/image';
+import { collectTextStyleTargetIds } from '../../utils/textStyleTargets';
 import { PanelButton, PanelTextButton, PanelSection, ButtonRow, CompactDropdownPicker } from './ui';
 
 interface Props {
@@ -276,10 +277,12 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
         return () => document.removeEventListener('mousedown', handleMouseDown);
     }, [openCompactPicker]);
 
-    const hasTextSelected = useMemo(
-        () => selectedIds.some((id) => elements.find((e) => e.id === id)?.type === 'text'),
+    const selectedTextStyleTargetIds = useMemo(
+        () => collectTextStyleTargetIds(selectedIds, elements),
         [selectedIds, elements],
     );
+
+    const hasTextStyleTargets = selectedTextStyleTargetIds.length > 0;
 
     const selectedLinear = useMemo(() => {
         const el = selectedIds.length === 1 ? elements.find((e) => e.id === selectedIds[0]) : null;
@@ -332,6 +335,13 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
         return currentStyle;
     }, [selectedIds, elements, currentStyle]);
 
+    const textDisplayStyle = useMemo(() => {
+        if (selectedTextStyleTargetIds.length === 0) return currentStyle;
+        const textEl = elements.find((e) => e.id === selectedTextStyleTargetIds[0]);
+        if (textEl?.type === 'text') return textEl.style;
+        return currentStyle;
+    }, [selectedTextStyleTargetIds, elements, currentStyle]);
+
     const apply = (updates: Partial<typeof currentStyle>) => {
         setCurrentStyle(updates);
         if (selectedIds.length > 0) {
@@ -341,6 +351,19 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
             });
             pushHistory();
         }
+    };
+
+    const applyTextStyle = (updates: Partial<Pick<typeof currentStyle, 'fontSize' | 'fontFamily'>>) => {
+        setCurrentStyle(updates);
+        if (selectedTextStyleTargetIds.length === 0) return;
+
+        selectedTextStyleTargetIds.forEach((id) => {
+            const el = elements.find((e) => e.id === id);
+            if (el?.type === 'text') {
+                updateElement(id, { style: { ...el.style, ...updates } });
+            }
+        });
+        pushHistory();
     };
 
     const opacityPct = Math.round(displayStyle.opacity * 100);
@@ -395,7 +418,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
     };
 
     return (
-        <div style={panelStyle}>
+        <div style={panelStyle} data-flow-style-panel="true">
 
             {/* ════════ Stroke Color ════════ */}
             <PanelSection label="Stroke" theme={theme}>
@@ -674,7 +697,7 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
             </>
 
             {/* ════════ Font Size (text) ════════ */}
-            {hasTextSelected && (
+            {hasTextStyleTargets && (
                 <>
                     <hr style={dividerStyle} />
                     <PanelSection label="Font size" theme={theme}>
@@ -682,9 +705,9 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                             {FONT_SIZES.map((sz) => (
                                 <PanelTextButton
                                     key={sz}
-                                    isActive={displayStyle.fontSize === sz}
+                                    isActive={textDisplayStyle.fontSize === sz}
                                     theme={theme}
-                                    onClick={() => apply({ fontSize: sz })}
+                                    onClick={() => applyTextStyle({ fontSize: sz })}
                                     flex="none"
                                     style={{ width: 28, padding: '2px 0' }}
                                 >
@@ -697,8 +720,8 @@ const StylePanel: React.FC<Props> = ({ theme }) => {
                     {/* ════════ Font Family (text) ════════ */}
                     <PanelSection label="Font family" theme={theme}>
                         <select
-                            value={displayStyle.fontFamily}
-                            onChange={(e) => apply({ fontFamily: e.target.value })}
+                            value={textDisplayStyle.fontFamily}
+                            onChange={(e) => applyTextStyle({ fontFamily: e.target.value })}
                             style={{
                                 width: '100%', padding: '4px 6px', borderRadius: 4,
                                 border: `1px solid ${theme.toolbarBorder}`, background: theme.panelBg,

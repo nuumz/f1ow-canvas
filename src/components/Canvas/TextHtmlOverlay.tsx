@@ -177,13 +177,9 @@ const TextOverlayItem: React.FC<ItemProps> = React.memo(({
     // Hide when text is empty and not auto-editing
     const isVisible = !!(text || isEditing);
 
-    // Bound text (shape labels) is rendered inside the Konva layer so it
-    // shares the container's z-index and is correctly occluded by shapes
-    // stacked above the container. The HTML overlay still takes over
-    // during edit mode to provide WYSIWYG markdown editing.
-    if (isBound && !isEditing) {
-        return null;
-    }
+    // Bound text always renders through the HTML overlay so markdown
+    // formatting (bold/italic/strike) stays visible outside edit mode.
+    // The Konva <Text> in TextShape keeps a transparent hit area only.
 
     return (
         <div
@@ -302,6 +298,19 @@ function createEditingMarkup(text: string): string {
     return renderMarkdown(text || '') || '<br>';
 }
 
+export function isStylePanelTarget(target: EventTarget | null): boolean {
+    const maybeElement = target as { closest?: (selector: string) => unknown } | null;
+    if (!maybeElement || typeof maybeElement.closest !== 'function') return false;
+    return !!maybeElement.closest('[data-flow-style-panel="true"]');
+}
+
+export function shouldKeepEditingOnBlur(
+    relatedTarget: EventTarget | null,
+    activeElement: EventTarget | null,
+): boolean {
+    return isStylePanelTarget(relatedTarget) || isStylePanelTarget(activeElement);
+}
+
 function enterEditMode(
     div: HTMLDivElement,
     element: TextElement,
@@ -344,13 +353,19 @@ function enterEditMode(
     // the contentEditable, triggering blur → finishEdit → delete empty text.
     requestAnimationFrame(() => {
         if (!editingRef.current) return;  // cancelled before focus
+        if (!div.isConnected || !document.contains(div)) return;
         div.focus();
         const sel = window.getSelection();
         if (sel) {
-            const range = document.createRange();
-            range.selectNodeContents(div);
-            sel.removeAllRanges();
-            sel.addRange(range);
+            try {
+                const range = document.createRange();
+                range.selectNodeContents(div);
+                if (!document.contains(range.commonAncestorContainer)) return;
+                sel.removeAllRanges();
+                sel.addRange(range);
+            } catch {
+                // Selection can fail if the editing node is detached between frames.
+            }
         }
     });
 
@@ -424,7 +439,18 @@ function enterEditMode(
         onEditEnd(element.id, isEmpty);
     };
 
-    const handleBlur = () => finishEdit();
+    const handleBlur = (event: FocusEvent) => {
+        if (shouldKeepEditingOnBlur(event.relatedTarget, document.activeElement)) {
+            return;
+        }
+
+        // Some browsers provide null relatedTarget for toolbar clicks.
+        requestAnimationFrame(() => {
+            if (!editingRef.current) return;
+            if (shouldKeepEditingOnBlur(null, document.activeElement)) return;
+            finishEdit();
+        });
+    };
 
     const handleBeforeInput = (e: InputEvent) => {
         if (e.inputType === 'formatBold') {

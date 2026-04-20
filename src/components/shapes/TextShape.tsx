@@ -134,12 +134,11 @@ const TextShape: React.FC<Props> = ({
     const effectiveAlign = isBound ? (textAlign || 'center') : undefined;
     const effectiveVerticalAlign = isBound ? (verticalAlign || 'middle') : undefined;
 
-    // Bound text: paint visibly here so it sits at the container's z-index
-    // inside the Konva layer (HTML overlay no longer renders bound text
-    // except during edit). Standalone text stays transparent — the HTML
-    // overlay still owns visual rendering for markdown.
-    const fillColor = isBound ? (style.strokeColor || '#1a1a1a') : 'transparent';
-    const textOpacity = isBound ? (style.opacity ?? 1) : 1;
+    // Visual rendering is owned by TextHtmlOverlay for both standalone and
+    // bound text so markdown formatting is preserved. This Konva node stays
+    // transparent and only handles hit-testing/transform for standalone text.
+    const fillColor = 'transparent';
+    const textOpacity = 1;
 
     return (
         <Text
