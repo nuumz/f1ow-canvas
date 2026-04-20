@@ -49,6 +49,13 @@ export type {
     ImageCrop,
     ElementMeta,
     CanvasOperation,
+    AnchorId,
+    Port,
+    SnapMode,
+    LineGradient,
+    LineTaper,
+    LineStyleExtension,
+    ConnectionConfig,
 } from '../types';
 
 // Store hook (for advanced usage)
@@ -63,6 +70,28 @@ export { distance, normalizeRect, rotatePoint, isPointInRect, getDiamondPoints, 
 export { exportToDataURL, downloadPNG, exportToJSON, downloadJSON, exportToSVG, downloadSVG } from '../utils/export';
 export { drawArrowhead, arrowheadSize, flatToPoints } from '../utils/arrowheads';
 export { computeCurveControlPoint, quadBezierAt, quadBezierTangent, curveArrowPrev, CURVE_RATIO } from '../utils/curve';
+
+// Connection / binding utilities
+export {
+    anchorToFixedPoint,
+    fixedPointToAnchor,
+    resolvePort,
+    resolveBindingPoint,
+    createBindingFromSnap,
+    isBindingStale,
+    findNearestSnapTarget,
+    recomputeBoundPoints,
+    computeFixedPoint,
+    getEdgePointFromFixedPoint,
+    isConnectable,
+    getConnectionPoints,
+    getEdgePoint,
+    getAnchorPosition,
+    findConnectorsForElement,
+    addBoundElement,
+    removeBoundElement,
+    syncBoundElements,
+} from '../utils/connection';
 
 // Label metrics — shared constants & measurement for connector labels
 export { LABEL_PADDING_H, LABEL_PADDING_V, LABEL_CORNER, LABEL_LINE_HEIGHT, LABEL_MIN_WIDTH, measureLabelText, computePillSize } from '../utils/labelMetrics';
@@ -84,20 +113,6 @@ export {
     getElbowPreferredDirection,
 } from '../utils/elbow';
 export type { Direction } from '../utils/elbow';
-export {
-    getConnectionPoints,
-    getEdgePoint,
-    getEdgePointFromFixedPoint,
-    computeFixedPoint,
-    getAnchorPosition,
-    findNearestSnapTarget,
-    isConnectable,
-    recomputeBoundPoints,
-    findConnectorsForElement,
-    addBoundElement,
-    removeBoundElement,
-    syncBoundElements,
-} from '../utils/connection';
 
 // Image utilities
 export {

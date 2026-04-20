@@ -24,6 +24,14 @@ import {
     cancelViewportAnimation,
 } from '@/utils/camera';
 
+// ─── Geometry field detection ─────────────────────────────────
+
+/** Fields that affect element geometry — changing any of these bumps `version` */
+const GEOMETRY_KEYS = new Set<string>([
+    'x', 'y', 'width', 'height', 'rotation', 'ports', 'points',
+    'cornerRadius', 'radiusX', 'radiusY',
+]);
+
 // ─── History Entry ────────────────────────────────────────────
 
 /** Single element diff: tracks what changed for one element */
@@ -223,13 +231,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             }
             return;
         }
+        // Auto-bump version when geometry fields change
+        const hasGeometryChange = Object.keys(updates).some(k => GEOMETRY_KEYS.has(k));
         set((state) => {
             const elements = state.elements;
             const idx = elements.findIndex(el => el.id === id);
             if (idx === -1) return state;
-            const updated = { ...elements[idx], ...updates } as CanvasElement;
+            const base = elements[idx];
+            const versionBump = hasGeometryChange ? { version: (base.version ?? 0) + 1 } : {};
+            const updated = { ...base, ...updates, ...versionBump } as CanvasElement;
             // Reuse array when element reference is identical (no actual change)
-            if (updated === elements[idx]) return state;
+            if (updated === base) return state;
             const next = elements.slice();
             next[idx] = updated;
             return { elements: next };
@@ -269,7 +281,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 const idx = idxMap.get(id);
                 if (idx === undefined) continue;
                 const src = next ? next[idx] : elements[idx];
-                const updated = { ...src, ...updates } as CanvasElement;
+                const hasGeometryChange = Object.keys(updates).some(k => GEOMETRY_KEYS.has(k));
+                const versionBump = hasGeometryChange ? { version: (src.version ?? 0) + 1 } : {};
+                const updated = { ...src, ...updates, ...versionBump } as CanvasElement;
                 if (updated === src) continue;
                 if (!next) next = elements.slice();
                 next[idx] = updated;

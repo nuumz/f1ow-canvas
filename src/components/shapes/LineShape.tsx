@@ -9,6 +9,7 @@ import { createRNG, drawRoughPolyline, drawRoughCurve, getRoughPasses } from '@/
 import { computeElbowPoints, simplifyElbowPath } from '@/utils/elbow';
 import { useElbowShapeFingerprint } from '@/hooks/useElbowShapeFingerprint';
 import { useElbowWorker } from '@/hooks/useElbowWorker';
+import { useFlowAnimation } from '@/hooks/useFlowAnimation';
 
 interface Props {
     element: LineElement;
@@ -29,7 +30,12 @@ const LineShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped,
     const { id, x, y, points, rotation, style, startBinding, endBinding, lineType, isLocked } = element;
     const isDraggable = !isLocked && !isGrouped;
     const groupRef = useRef<Konva.Group>(null);
+    const lineRef = useRef<Konva.Line>(null);
     const roughness = style.roughness;
+    const flowEnabled = element.lineStyle?.flowAnimation ?? false;
+
+    // Flow animation — animates dashOffset on the main line
+    useFlowAnimation(lineRef, flowEnabled);
 
     // Prevent drag when bound to shapes (binding auto-recomputes position)
     const isCurved = lineType === 'curved';
@@ -162,6 +168,7 @@ const LineShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped,
                         perfectDrawEnabled={false}
                     />
                     <Line
+                        ref={lineRef}
                         points={elbowPoints}
                         stroke={style.strokeColor}
                         strokeWidth={style.strokeWidth}
@@ -240,6 +247,7 @@ const LineShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped,
                         perfectDrawEnabled={false}
                     />
                     <Line
+                        ref={lineRef}
                         points={points}
                         stroke={style.strokeColor}
                         strokeWidth={style.strokeWidth}

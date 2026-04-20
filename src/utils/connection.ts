@@ -26,6 +26,9 @@ import type {
     LineElement,
     TextElement,
     BoundElement,
+    AnchorId,
+    Port,
+    SnapMode,
 } from '@/types';
 import { getElbowPreferredDirection } from '@/utils/elbow';
 import type { Direction } from '@/utils/elbow';
@@ -97,6 +100,109 @@ export function getAnchorPosition(el: CanvasElement, anchor: ConnectionAnchor): 
     return getConnectionPoints(el)[anchor];
 }
 
+// ─── Anchor / Port resolution ─────────────────────────────────
+
+/** Map a named AnchorId to its fixedPoint ratio on the bounding box */
+export function anchorToFixedPoint(anchor: AnchorId): [number, number] {
+    switch (anchor) {
+        case 'n':      return [0.5, 0];
+        case 's':      return [0.5, 1];
+        case 'e':      return [1, 0.5];
+        case 'w':      return [0, 0.5];
+        case 'ne':     return [1, 0];
+        case 'nw':     return [0, 0];
+        case 'se':     return [1, 1];
+        case 'sw':     return [0, 1];
+        case 'center': return [0.5, 0.5];
+        case 'auto':   return [0.5, 0.5]; // caller should resolve via nearest
+        default:       return [0.5, 0.5];
+    }
+}
+
+/** Find the nearest cardinal AnchorId for a given fixedPoint */
+export function fixedPointToAnchor(fp: [number, number]): AnchorId {
+    const anchors: { id: AnchorId; fp: [number, number] }[] = [
+        { id: 'n',  fp: [0.5, 0] },
+        { id: 's',  fp: [0.5, 1] },
+        { id: 'e',  fp: [1, 0.5] },
+        { id: 'w',  fp: [0, 0.5] },
+        { id: 'ne', fp: [1, 0] },
+        { id: 'nw', fp: [0, 0] },
+        { id: 'se', fp: [1, 1] },
+        { id: 'sw', fp: [0, 1] },
+        { id: 'center', fp: [0.5, 0.5] },
+    ];
+    let best: AnchorId = 'auto';
+    let bestDist = Infinity;
+    for (const a of anchors) {
+        const d = Math.hypot(fp[0] - a.fp[0], fp[1] - a.fp[1]);
+        if (d < bestDist) {
+            bestDist = d;
+            best = a.id;
+        }
+    }
+    return best;
+}
+
+/** Resolve a port's ratio to a fixedPoint on an element */
+export function resolvePort(el: CanvasElement, portId: string): [number, number] | null {
+    if (!el.ports) return null;
+    const port = el.ports.find(p => p.id === portId);
+    return port ? port.ratio : null;
+}
+
+/**
+ * Resolve the effective fixedPoint for a binding, respecting priority:
+ * portId > anchor > fixedPoint.
+ *
+ * Returns the resolved fixedPoint and the effective snapMode.
+ */
+export function resolveBindingPoint(
+    binding: Binding,
+    element: CanvasElement,
+): { fixedPoint: [number, number]; snapMode: SnapMode } {
+    // Port takes highest priority
+    if (binding.portId) {
+        const portFp = resolvePort(element, binding.portId);
+        if (portFp) return { fixedPoint: portFp, snapMode: 'port' };
+    }
+    // Named anchor
+    if (binding.anchor && binding.anchor !== 'auto') {
+        return { fixedPoint: anchorToFixedPoint(binding.anchor), snapMode: 'anchor' };
+    }
+    // Fallback to stored fixedPoint
+    const mode: SnapMode = binding.fixedPoint[0] === 0.5 && binding.fixedPoint[1] === 0.5
+        ? 'center'
+        : 'edge';
+    return { fixedPoint: binding.fixedPoint, snapMode: mode };
+}
+
+/**
+ * Create a Binding from a SnapTarget result.
+ * Convenience helper for LinearTool and LinearElementHandles.
+ */
+export function createBindingFromSnap(
+    snap: SnapTarget,
+    gap: number,
+    elementVersion: number,
+): Binding {
+    return {
+        elementId: snap.elementId,
+        fixedPoint: snap.fixedPoint,
+        gap,
+        snapMode: snap.snapMode,
+        elementVersion,
+        isPrecise: snap.isPrecise,
+        anchor: snap.anchor,
+        portId: snap.portId,
+    };
+}
+
+/** Check whether a binding's elementVersion matches the current element */
+export function isBindingStale(binding: Binding, element: CanvasElement): boolean {
+    return binding.elementVersion !== element.version;
+}
+
 // ─── Dynamic gap computation ──────────────────────────────────
 
 /** Base offset for bound arrows (px) */
@@ -131,21 +237,30 @@ export function computeFixedPoint(el: CanvasElement, worldPt: Point): [number, n
 /**
  * Convert a fixedPoint ratio back to a world-space target point,
  * then compute the edge intersection from center to that target.
+ *
+ * @param toward  Optional direction hint for center fixedPoint [0.5, 0.5].
+ *                When the fixedPoint is exactly center, there's no meaningful
+ *                direction — `toward` provides the other endpoint so we can
+ *                compute a stable edge exit. Without it, returns the element center.
  */
 export function getEdgePointFromFixedPoint(
     el: CanvasElement,
     fixedPoint: [number, number],
     gap = 0,
+    toward?: Point,
 ): Point {
     // fixedPoint is in local space of the shape's bbox
     const localTargetX = (fixedPoint[0] - 0.5) * el.width;
     const localTargetY = (fixedPoint[1] - 0.5) * el.height;
 
-    // Center fixedPoint [0.5, 0.5]: no meaningful direction for edge computation.
-    // Return the element's center — callers (e.g. getAnchorDir) use this as a
-    // direction anchor, and center-toward-center produces correct edge points
-    // on the OTHER shape.
+    // Center fixedPoint [0.5, 0.5]: use `toward` for direction if available.
+    // This prevents the degenerate zero-direction case that caused oscillation.
     if (localTargetX === 0 && localTargetY === 0) {
+        if (toward) {
+            return getEdgePoint(el, toward, gap);
+        }
+        // No direction hint — return element center (callers use this for
+        // getAnchorDir which then drives the OTHER shape's edge computation)
         return localToWorld(el, { x: 0, y: 0 });
     }
 
@@ -171,7 +286,11 @@ export function getEdgePoint(el: CanvasElement, toward: Point, gap = 0): Point {
     const ly = local.y;
 
     if (lx === 0 && ly === 0) {
-        // toward IS the center — fallback to top edge
+        // toward IS the center — fallback: use the widest dimension
+        // to pick a stable edge (right for landscape, top for portrait/square)
+        if (el.width >= el.height) {
+            return localToWorld(el, { x: el.width / 2 + gap, y: 0 });
+        }
         return localToWorld(el, { x: 0, y: -(el.height / 2 + gap) });
     }
 
@@ -286,6 +405,17 @@ const EDGE_INNER_BAND = 20;
  * This creates a "dead zone" around the boundary where the mode stays locked.
  */
 const HYSTERESIS_MARGIN = 6;
+
+/** Hit radius for port/anchor point detection (px, canvas space) */
+const PORT_HIT_RADIUS = 12;
+
+/** Cardinal anchor positions as fixedPoints */
+const CARDINAL_ANCHORS: Array<{ anchor: AnchorId; fp: [number, number] }> = [
+    { anchor: 'n', fp: [0.5, 0] },
+    { anchor: 's', fp: [0.5, 1] },
+    { anchor: 'e', fp: [1, 0.5] },
+    { anchor: 'w', fp: [0, 0.5] },
+];
 
 /**
  * Distance from a point INSIDE a shape to its nearest edge (in pixels).
@@ -529,7 +659,65 @@ export function findNearestSnapTarget(
                 }
             }
 
-            best = { elementId: el.id, fixedPoint: fp, position: edgePt, isPrecise: useEdge };
+            best = { elementId: el.id, fixedPoint: fp, position: edgePt, isPrecise: useEdge, snapMode: useEdge ? 'edge' : 'center' };
+        }
+
+        // ── Port / Anchor snap (higher priority than edge/center) ──
+        // Check ports first (highest priority), then cardinal anchors.
+        // Only override if cursor is within PORT_HIT_RADIUS of the dot.
+        if (best && best.elementId === el.id) {
+            let portSnap: SnapTarget | null = null;
+
+            // 1) Custom ports
+            if (el.ports) {
+                for (const port of el.ports) {
+                    const portWorld = {
+                        x: el.x + port.ratio[0] * el.width,
+                        y: el.y + port.ratio[1] * el.height,
+                    };
+                    const pd = Math.hypot(portWorld.x - pos.x, portWorld.y - pos.y);
+                    if (pd <= PORT_HIT_RADIUS) {
+                        const edgePt = getEdgePointFromFixedPoint(el, port.ratio, gap);
+                        portSnap = {
+                            elementId: el.id,
+                            fixedPoint: port.ratio,
+                            position: edgePt,
+                            isPrecise: true,
+                            snapMode: 'port',
+                            portId: port.id,
+                        };
+                        break; // first port hit wins
+                    }
+                }
+            }
+
+            // 2) Cardinal anchors (only if no port hit)
+            if (!portSnap) {
+                let bestAnchorDist = PORT_HIT_RADIUS + 1;
+                for (const { anchor, fp } of CARDINAL_ANCHORS) {
+                    const anchorWorld = {
+                        x: el.x + fp[0] * el.width,
+                        y: el.y + fp[1] * el.height,
+                    };
+                    const ad = Math.hypot(anchorWorld.x - pos.x, anchorWorld.y - pos.y);
+                    if (ad <= PORT_HIT_RADIUS && ad < bestAnchorDist) {
+                        bestAnchorDist = ad;
+                        const edgePt = getEdgePointFromFixedPoint(el, fp, gap);
+                        portSnap = {
+                            elementId: el.id,
+                            fixedPoint: fp,
+                            position: edgePt,
+                            isPrecise: true,
+                            snapMode: 'anchor',
+                            anchor,
+                        };
+                    }
+                }
+            }
+
+            if (portSnap) {
+                best = portSnap;
+            }
         }
     }
 
@@ -584,14 +772,26 @@ export function recomputeBoundPoints(
     const startEl = startBinding ? elementMap.get(startBinding.elementId) : undefined;
     const endEl = endBinding ? elementMap.get(endBinding.elementId) : undefined;
 
-    // Helper: get anchor point for a binding (respecting isPrecise)
+    // Helper: get anchor point for a binding.
+    // Uses resolveBindingPoint for anchor/port-aware resolution.
+    // For precise bindings, uses the resolved fixedPoint as direction anchor.
+    // For imprecise bindings, uses shape center.
     const getAnchorDir = (binding: Binding, el: CanvasElement): Point => {
         if (binding.isPrecise) {
-            // Use the fixedPoint position as direction anchor
-            return getEdgePointFromFixedPoint(el, binding.fixedPoint, 0);
+            const { fixedPoint: resolvedFp } = resolveBindingPoint(binding, el);
+            return getEdgePointFromFixedPoint(el, resolvedFp, 0);
         }
         // Default (imprecise): use shape center
         return { x: el.x + el.width / 2, y: el.y + el.height / 2 };
+    };
+
+    /**
+     * Compute edge point for a precise binding, resolving anchor/port first.
+     * Passes `toward` to handle the center fixedPoint degenerate case.
+     */
+    const getPreciseEdgePoint = (binding: Binding, el: CanvasElement, toward: Point): Point => {
+        const { fixedPoint: resolvedFp } = resolveBindingPoint(binding, el);
+        return getEdgePointFromFixedPoint(el, resolvedFp, binding.gap, toward);
     };
 
     // Helper: for elbow connectors with center (imprecise) bindings,
@@ -633,47 +833,47 @@ export function recomputeBoundPoints(
             getElbowFaceEdgePoint(el, _toward, gap)
         : getEdgePoint;
 
-    // Two-pass computation for better accuracy when both ends are bound
+    // Two-pass computation for better accuracy when both ends are bound.
+    // Anchor/port bindings are resolved via resolveBindingPoint, and the
+    // center fixedPoint degenerate case gets a `toward` direction hint.
     if (startBinding && startEl && endBinding && endEl) {
-        // For isPrecise bindings, the edge point is determined by the
-        // fixedPoint — the exact spot the user chose when dragging the
-        // endpoint.  Non-precise bindings use center-toward-other-end
-        // direction for automatic edge selection.
-        // For elbow connectors, non-precise bindings use the ELBOW-preferred
-        // direction (getCenterEdgePoint) to ensure the edge point is on the
-        // face that produces optimal elbow routing.
         if (startBinding.isPrecise) {
-            startPt = getEdgePointFromFixedPoint(startEl, startBinding.fixedPoint, startBinding.gap);
+            startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
         } else {
             const endAnchor = getAnchorDir(endBinding, endEl);
             startPt = getCenterEdgePoint(startEl, endAnchor, startBinding.gap);
         }
         if (endBinding.isPrecise) {
-            endPt = getEdgePointFromFixedPoint(endEl, endBinding.fixedPoint, endBinding.gap);
+            endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
         } else {
             const startAnchor = getAnchorDir(startBinding, startEl);
             endPt = getCenterEdgePoint(endEl, startAnchor, endBinding.gap);
         }
 
-        // Pass 2: Refine only non-precise bindings using pass-1 results
-        if (!startBinding.isPrecise) {
+        // Pass 2: Refine using pass-1 results as direction hints.
+        // Precise bindings also benefit from the refined `toward` point.
+        if (startBinding.isPrecise) {
+            startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
+        } else if (!startBinding.isPrecise) {
             startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap);
         }
-        if (!endBinding.isPrecise) {
+        if (endBinding.isPrecise) {
+            endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
+        } else if (!endBinding.isPrecise) {
             endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap);
         }
     } else {
         // One-sided binding
         if (startBinding && startEl) {
             if (startBinding.isPrecise) {
-                startPt = getEdgePointFromFixedPoint(startEl, startBinding.fixedPoint, startBinding.gap);
+                startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
             } else {
                 startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap);
             }
         }
         if (endBinding && endEl) {
             if (endBinding.isPrecise) {
-                endPt = getEdgePointFromFixedPoint(endEl, endBinding.fixedPoint, endBinding.gap);
+                endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
             } else {
                 endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap);
             }

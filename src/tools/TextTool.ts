@@ -34,6 +34,7 @@ export const textTool: ToolHandler = {
             containerId: null,
             textAlign: 'left',
             verticalAlign: 'top',
+            version: 0,
         };
         ctx.addElement(el);
         ctx.onElementCreate?.(el);

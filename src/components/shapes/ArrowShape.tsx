@@ -10,6 +10,7 @@ import { createRNG, drawRoughPolyline, drawRoughCurve, getRoughPasses } from '@/
 import { computeElbowPoints, simplifyElbowPath } from '@/utils/elbow';
 import { useElbowShapeFingerprint } from '@/hooks/useElbowShapeFingerprint';
 import { useElbowWorker } from '@/hooks/useElbowWorker';
+import { useFlowAnimation } from '@/hooks/useFlowAnimation';
 
 interface Props {
     element: ArrowElement;
@@ -40,6 +41,7 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
     const { id, x, y, points, rotation, style, startBinding, endBinding, lineType, isLocked } = element;
     const isDraggable = !isLocked && !isGrouped;
     const groupRef = useRef<Konva.Group>(null);
+    const lineRef = useRef<Konva.Line>(null);
     const roughness = style.roughness;
 
     const { start: startHead, end: endHead } = resolveArrowheads(element);
@@ -48,6 +50,10 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
     const isElbow = lineType === 'elbow';
     const size = arrowheadSize(style.strokeWidth);
     const passes = getRoughPasses(roughness);
+    const flowEnabled = element.lineStyle?.flowAnimation ?? false;
+
+    // Flow animation — animates dashOffset on the main line
+    useFlowAnimation(lineRef, flowEnabled);
 
     // Stable fingerprint of connectable shapes — only changes when
     // shape positions/sizes change, not on every render cycle.
@@ -176,6 +182,7 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
                         perfectDrawEnabled={false}
                     />
                     <Line
+                        ref={lineRef}
                         points={elbowPoints}
                         stroke={style.strokeColor}
                         strokeWidth={style.strokeWidth}
@@ -314,6 +321,7 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
                         perfectDrawEnabled={false}
                     />
                     <Line
+                        ref={lineRef}
                         points={points}
                         stroke={style.strokeColor}
                         strokeWidth={style.strokeWidth}

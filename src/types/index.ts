@@ -40,6 +40,31 @@ export type Arrowhead =
 // ─── Line Type (routing) ──────────────────────────────────────
 export type LineType = 'sharp' | 'curved' | 'elbow';
 
+// ─── Line Style Extensions ───────────────────────────────────
+/** Gradient definition for connector strokes */
+export interface LineGradient {
+    /** Color stops: [offset (0-1), cssColor] */
+    stops: [number, string][];
+    /** Gradient follows the path direction */
+    type: 'along-path';
+}
+
+/** Tapered stroke: width varies from start to end */
+export interface LineTaper {
+    startWidth: number;
+    endWidth: number;
+}
+
+/** Extended line style options for connectors */
+export interface LineStyleExtension {
+    /** Gradient stroke along the connector path */
+    gradient?: LineGradient;
+    /** Tapered stroke width */
+    taper?: LineTaper;
+    /** Animated flow direction indicator (dash animation) */
+    flowAnimation?: boolean;
+}
+
 // ─── Freehand style ───────────────────────────────────────────
 export type FreehandStyle = 'standard' | 'pen' | 'brush' | 'pencil';
 
@@ -70,6 +95,17 @@ export interface BaseElement {
     isVisible: boolean;
     /** Bidirectional refs: arrows/text bound to this element */
     boundElements: BoundElement[] | null;
+    /**
+     * Custom ports defined on this element instance.
+     * Used for architecture diagrams where shapes have named I/O points.
+     */
+    ports?: Port[];
+    /**
+     * Monotonic version counter — bumped on every geometry/port mutation.
+     * Used by binding system to detect stale worker results and cache invalidation.
+     * Auto-managed by the store; consumers should not set this directly.
+     */
+    version: number;
     /** Group hierarchy: element belongs to these groups (innermost first, outermost last) */
     groupIds?: string[];
     /**
@@ -144,6 +180,8 @@ export interface LineElement extends BaseElement {
     curvature?: number;
     startBinding: Binding | null;
     endBinding: Binding | null;
+    /** Extended line style (gradient, taper, animation) */
+    lineStyle?: LineStyleExtension;
 }
 
 export interface ArrowElement extends BaseElement {
@@ -163,6 +201,8 @@ export interface ArrowElement extends BaseElement {
     curvature?: number;
     startBinding: Binding | null;
     endBinding: Binding | null;
+    /** Extended line style (gradient, taper, animation) */
+    lineStyle?: LineStyleExtension;
 }
 
 export interface FreeDrawElement extends BaseElement {
@@ -252,9 +292,33 @@ export interface SelectionBox {
     height: number;
 }
 
+// ─── Anchor / Port System ─────────────────────────────────────
+
+/** Named anchor positions on a shape's bounding box (compass notation) */
+export type AnchorId =
+    | 'n' | 's' | 'e' | 'w'
+    | 'ne' | 'nw' | 'se' | 'sw'
+    | 'center'
+    | 'auto';
+
+/** Custom port on an element — user-defined attachment point */
+export interface Port {
+    /** Unique port identifier within the element */
+    id: string;
+    /** Normalized [0-1, 0-1] position on the element's bounding box */
+    ratio: [number, number];
+    /** Optional display label for the port */
+    label?: string;
+    /** Optional preferred edge (used for elbow routing direction) */
+    edge?: AnchorId;
+}
+
+/** How the binding target was determined */
+export type SnapMode = 'anchor' | 'port' | 'edge' | 'center';
+
 // ─── Connection / Binding ─────────────────────────────────────
 /**
- * @deprecated Use fixedPoint binding instead. Kept for backward-compat exports.
+ * @deprecated Use AnchorId instead. Kept for backward-compat exports.
  */
 export type ConnectionAnchor = 'top' | 'bottom' | 'left' | 'right' | 'center';
 
@@ -269,12 +333,29 @@ export interface Binding {
     /** The element this end is connected to */
     elementId: string;
     /**
+     * Named anchor position. When set, takes precedence over fixedPoint.
+     * Resolves to a fixedPoint at bind time, but re-resolves after resize
+     * to maintain semantic meaning (e.g. "always top-center").
+     * 'auto' = let the system choose the nearest anchor.
+     */
+    anchor?: AnchorId;
+    /** Custom port ID. When set, takes precedence over anchor and fixedPoint. */
+    portId?: string;
+    /**
      * Continuous attachment ratio [0-1, 0-1] on target's bounding box.
      * e.g. [0.5, 0] = top center, [1, 0.5] = right center, [0.3, 0.7] = arbitrary.
+     * Always populated — serves as resolved cache when anchor/port is set.
      */
     fixedPoint: [number, number];
     /** Gap between the edge of the shape and the arrow tip (px) */
     gap: number;
+    /** How the binding target was determined */
+    snapMode: SnapMode;
+    /**
+     * Version of the target element at bind time.
+     * Used to detect stale bindings (e.g. worker results arriving after element changed).
+     */
+    elementVersion: number;
     /**
      * Whether to bind to the exact fixedPoint position, or to the shape center.
      * When false (default), the arrow connects from/to the shape's center,
@@ -298,6 +379,12 @@ export interface SnapTarget {
      * - `false`: cursor is in the center zone → attaches to center for auto-routing
      */
     isPrecise: boolean;
+    /** Named anchor if snapped to a cardinal position */
+    anchor?: AnchorId;
+    /** Custom port ID if snapped to a port */
+    portId?: string;
+    /** How the snap target was determined */
+    snapMode: SnapMode;
 }
 
 // ─── Linear Element Editor ────────────────────────────────────
@@ -315,4 +402,28 @@ export interface LinearEditState {
     hoveredMidpointIndex: number | null;
     /** Whether a point is currently being dragged */
     isDraggingPoint: boolean;
+}
+
+// ─── Connection Configuration ─────────────────────────────────
+/**
+ * Consumer-facing configuration for the connection/binding system.
+ * Pass via `FlowCanvasProps.connectionConfig`.
+ */
+export interface ConnectionConfig {
+    /** Distance outside shape perimeter to activate edge snap (px). Default: 24 */
+    snapThreshold?: number;
+    /** Hysteresis margin to prevent edge/center mode flickering (px). Default: 6 */
+    hysteresisMargin?: number;
+    /** Clearance around shapes for elbow routing (px). Default: adaptive */
+    elbowMargin?: number;
+    /** Hit radius for port dots (px, before zoom compensation). Default: 8 */
+    portHitRadius?: number;
+    /** Minimum stub length for elbow route endpoints (px). Default: 36 */
+    stubLength?: number;
+    /** Whether to render custom ports on shapes. Default: true */
+    enablePorts?: boolean;
+    /** Default line style extension applied to new connectors */
+    defaultLineStyle?: LineStyleExtension;
+    /** Default line type for new arrows/lines. Default: 'sharp' */
+    defaultLineType?: LineType;
 }

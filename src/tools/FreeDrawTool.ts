@@ -46,6 +46,7 @@ export const freeDrawTool: ToolHandler = {
             points: [pos.x, pos.y],
             pressures: [pressure],
             isComplete: false,
+            version: 0,
         };
         // Pause before addElement so no intermediate snapshot is recorded.
         useCanvasStore.getState().pauseHistory();

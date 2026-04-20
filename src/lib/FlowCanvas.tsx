@@ -1638,6 +1638,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     containerId: id,
                     textAlign: 'center',
                     verticalAlign: 'middle',
+                    version: 0,
                 };
 
                 add(textEl);
@@ -1684,6 +1685,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     containerId: id,
                     textAlign: 'center',
                     verticalAlign: 'middle',
+                    version: 0,
                 };
 
                 // Add text element

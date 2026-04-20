@@ -50,6 +50,8 @@ export function useElbowWorker(
     const elementsRef = useRef<CanvasElement[]>(allElements);
     const workerConfigCtx = useWorkerConfig();
     const workerConfig = workerConfigCtx?.elbowWorkerConfig;
+    // Monotonically increasing request counter to discard stale Worker results
+    const requestEpochRef = useRef(0);
 
     elementsRef.current = allElements;
 
@@ -76,6 +78,7 @@ export function useElbowWorker(
 
         const mgr = getElbowWorkerManager(workerConfig);
         let cancelled = false;
+        const epoch = ++requestEpochRef.current;
 
         const routeParams: RouteParams = {
             startWorld: params.startWorld,
@@ -88,7 +91,8 @@ export function useElbowWorker(
         if (mgr.isWorkerActive) {
             // Async path: request from Worker
             mgr.computeRoute(routeParams).then(points => {
-                if (!cancelled) {
+                // Drop stale results — a newer request has been issued
+                if (!cancelled && requestEpochRef.current === epoch) {
                     setAsyncResult(points);
                 }
             });

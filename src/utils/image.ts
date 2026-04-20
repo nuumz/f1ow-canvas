@@ -89,6 +89,7 @@ export function createImageElement(
         crop: null,
         cornerRadius: 0,
         alt: '',
+        version: 0,
     };
 }
 

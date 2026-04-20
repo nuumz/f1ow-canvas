@@ -1072,7 +1072,7 @@ export function computeElbowRoute(
         return pickBestRoute(candidates);
     }
 
-    // ── Fallback: try without intermediate obstacles ──
+    // ── Fallback 1: try without intermediate obstacles ──
     // When intermediate shapes block ALL paths, retry with only
     // the endpoint shapes. Better to cut through shapes than fail.
     if (intermediateRects.length > 0) {
@@ -1084,7 +1084,35 @@ export function computeElbowRoute(
         if (routeFallback) return routeFallback;
     }
 
-    // ── Final fallback ──
+    // ── Fallback 2: relaxed margin (half normal) ──
+    if (intermediateRects.length > 0) {
+        const halfMargin = Math.max(4, inflationMargin / 2);
+        const halfIntermediateRects = (intermediateObstacles ?? []).map(bbox =>
+            rectInflate(bboxToRect(bbox), halfMargin, halfMargin),
+        );
+        const inflA_half = startBBox
+            ? inflateExcludingFace(shapeA, halfMargin, startDir)
+            : rectInflate(shapeA, halfMargin, halfMargin);
+        const inflB_half = endBBox
+            ? inflateExcludingFace(shapeB, halfMargin, endDir)
+            : rectInflate(shapeB, halfMargin, halfMargin);
+        const routeRelaxed = findRouteWithObstacles(
+            start, end, startDir, endDir,
+            [inflA_half, inflB_half, ...halfIntermediateRects],
+            antennaMargin,
+        );
+        if (routeRelaxed) {
+            if (import.meta.env?.DEV) {
+                console.warn('[f1ow] elbow routing: used relaxed margins');
+            }
+            return routeRelaxed;
+        }
+    }
+
+    // ── Final fallback: simple L/S-bend ──
+    if (import.meta.env?.DEV) {
+        console.warn('[f1ow] elbow routing: A* failed, using geometric fallback');
+    }
     return simplifyPointPath(fallbackRoute(start, end, startDir, endDir, antennaMargin));
 }
 

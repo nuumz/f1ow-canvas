@@ -4,12 +4,15 @@
  * when the active tool is line/arrow. Uses area-based detection —
  * highlights the entire shape as a drop target + shows the edge-point.
  *
- * Renders shape-matched highlights: rectangle for rect/text/image,
- * ellipse for ellipse, diamond polygon for diamond.
+ * Shows:
+ * 1. Shape-matched highlight border (dashed outline)
+ * 2. 4 cardinal anchor dots (N/S/E/W) on hovered shape
+ * 3. Custom port dots from `element.ports`
+ * 4. Active snap-point indicator (filled dot at snapped position)
  */
 import React from 'react';
 import { Circle, Rect, Ellipse, Line } from 'react-konva';
-import type { CanvasElement, SnapTarget } from '@/types';
+import type { CanvasElement, SnapTarget, Port } from '@/types';
 import { isConnectable } from '@/utils/connection';
 import { rotatePoint } from '@/utils/geometry';
 
@@ -109,6 +112,70 @@ const ShapeHighlight: React.FC<{ el: CanvasElement; color: string; viewportScale
     }
 };
 
+const ANCHOR_FP: Array<[number, number]> = [
+    [0.5, 0],   // N
+    [0.5, 1],   // S
+    [1, 0.5],   // E
+    [0, 0.5],   // W
+];
+
+/** Anchor dots on the 4 cardinal edges of the hovered shape */
+const AnchorDots: React.FC<{ el: CanvasElement; color: string; viewportScale: number; snapTarget: SnapTarget | null }> = ({ el, color, viewportScale, snapTarget }) => {
+    const rotation = el.rotation || 0;
+    const origin = { x: el.x, y: el.y };
+    return (
+        <>
+            {ANCHOR_FP.map((fp, i) => {
+                const raw = { x: el.x + fp[0] * el.width, y: el.y + fp[1] * el.height };
+                const pt = rotation !== 0 ? rotatePoint(raw, origin, (rotation * Math.PI) / 180) : raw;
+                const isActive = snapTarget?.snapMode === 'anchor' &&
+                    snapTarget.fixedPoint[0] === fp[0] && snapTarget.fixedPoint[1] === fp[1];
+                return (
+                    <Circle
+                        key={i}
+                        x={pt.x}
+                        y={pt.y}
+                        radius={(isActive ? 5 : 3.5) / viewportScale}
+                        fill={isActive ? color : 'white'}
+                        stroke={color}
+                        strokeWidth={1.5 / viewportScale}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                );
+            })}
+        </>
+    );
+};
+
+/** Custom port dots from element.ports */
+const PortDots: React.FC<{ el: CanvasElement; ports: Port[]; color: string; viewportScale: number; snapTarget: SnapTarget | null }> = ({ el, ports, color, viewportScale, snapTarget }) => {
+    const rotation = el.rotation || 0;
+    const origin = { x: el.x, y: el.y };
+    return (
+        <>
+            {ports.map((port) => {
+                const raw = { x: el.x + port.ratio[0] * el.width, y: el.y + port.ratio[1] * el.height };
+                const pt = rotation !== 0 ? rotatePoint(raw, origin, (rotation * Math.PI) / 180) : raw;
+                const isActive = snapTarget?.snapMode === 'port' && snapTarget.portId === port.id;
+                return (
+                    <Circle
+                        key={port.id}
+                        x={pt.x}
+                        y={pt.y}
+                        radius={(isActive ? 6 : 4) / viewportScale}
+                        fill={isActive ? '#ff6b35' : '#fff3e0'}
+                        stroke={'#ff6b35'}
+                        strokeWidth={1.5 / viewportScale}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                );
+            })}
+        </>
+    );
+};
+
 const ConnectionPointsOverlay: React.FC<Props> = ({
     elements,
     snapTarget,
@@ -127,8 +194,14 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
         <>
             {/* Shape-matched highlight border around drop-target */}
             <ShapeHighlight el={targetEl} color={color} viewportScale={viewportScale} />
-            {/* Edge-point indicator — only when cursor is near the edge (precise mode) */}
-            {snapTarget.isPrecise && (
+            {/* Cardinal anchor dots (N/S/E/W) */}
+            <AnchorDots el={targetEl} color={color} viewportScale={viewportScale} snapTarget={snapTarget} />
+            {/* Custom port dots */}
+            {targetEl.ports && targetEl.ports.length > 0 && (
+                <PortDots el={targetEl} ports={targetEl.ports} color={color} viewportScale={viewportScale} snapTarget={snapTarget} />
+            )}
+            {/* Edge/port/anchor point indicator — shown when snap is precise */}
+            {snapTarget.isPrecise && snapTarget.snapMode !== 'anchor' && snapTarget.snapMode !== 'port' && (
                 <Circle
                     x={snapTarget.position.x}
                     y={snapTarget.position.y}

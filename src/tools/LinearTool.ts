@@ -56,7 +56,8 @@ export const linearTool: ToolHandler = {
 
         if (snap) {
             startPt = snap.position;
-            startBind = { elementId: snap.elementId, fixedPoint: snap.fixedPoint, gap, isPrecise: snap.isPrecise };
+            const targetEl = ctx.elements.find(e => e.id === snap.elementId);
+            startBind = { elementId: snap.elementId, fixedPoint: snap.fixedPoint, gap, isPrecise: snap.isPrecise, snapMode: snap.snapMode, elementVersion: targetEl?.version ?? 0 };
         } else {
             startPt = sp;
         }
@@ -81,6 +82,7 @@ export const linearTool: ToolHandler = {
             points: [0, 0, 0, 0],
             startBinding: startBind,
             endBinding: null,
+            version: 0,
         };
 
         // Read current defaults from store
@@ -136,7 +138,7 @@ export const linearTool: ToolHandler = {
         // direction during drawing, causing the preview path to differ
         // from the final path.
         const previewEndBinding: Binding | null = snap
-            ? { elementId: snap.elementId, fixedPoint: snap.fixedPoint, gap: endGap, isPrecise: snap.isPrecise }
+            ? { elementId: snap.elementId, fixedPoint: snap.fixedPoint, gap: endGap, isPrecise: snap.isPrecise, snapMode: snap.snapMode, elementVersion: ctx.elements.find(e => e.id === snap.elementId)?.version ?? 0 }
             : null;
 
         const dx = endPt.x - el.x;
@@ -148,7 +150,7 @@ export const linearTool: ToolHandler = {
             if (startEl) {
                 let startEdgePt: Point;
                 if (el.startBinding.isPrecise) {
-                    startEdgePt = getEdgePointFromFixedPoint(startEl, el.startBinding.fixedPoint, el.startBinding.gap);
+                    startEdgePt = getEdgePointFromFixedPoint(startEl, el.startBinding.fixedPoint, el.startBinding.gap, endPt);
                 } else {
                     startEdgePt = getEdgePoint(startEl, endPt, el.startBinding.gap);
                 }
@@ -213,7 +215,7 @@ export const linearTool: ToolHandler = {
 
                 const endGap = computeBindingGap(el.style.strokeWidth ?? 2);
                 const endBind: Binding | null = endSnap
-                    ? { elementId: endSnap.elementId, fixedPoint: endSnap.fixedPoint, gap: endGap, isPrecise: endSnap.isPrecise }
+                    ? { elementId: endSnap.elementId, fixedPoint: endSnap.fixedPoint, gap: endGap, isPrecise: endSnap.isPrecise, snapMode: endSnap.snapMode, elementVersion: ctx.elements.find(e => e.id === endSnap.elementId)?.version ?? 0 }
                     : null;
                 const startBind = el.startBinding ?? ctx.startBindingRef.current;
                 const finalEndBind =

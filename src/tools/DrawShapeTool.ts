@@ -33,6 +33,7 @@ export const drawShapeTool: ToolHandler = {
             isLocked: false,
             isVisible: true,
             boundElements: null,
+            version: 0,
         };
         const el: CanvasElement = ctx.activeTool === 'rectangle'
             ? { ...baseShape, type: 'rectangle', cornerRadius: 0 }

@@ -13,7 +13,7 @@ import type { CanvasElement } from '@/types';
 /** Base fields serialized for every element */
 export const SYNC_FIELDS = [
     'id', 'type', 'x', 'y', 'width', 'height', 'rotation',
-    'isLocked', 'isVisible', 'sortOrder',
+    'isLocked', 'isVisible', 'sortOrder', 'version',
 ] as const;
 
 /** Style sub-fields (flattened to `style.fieldName` for granular LWW) */
@@ -49,6 +49,26 @@ export function elementToYMap(el: CanvasElement, yMap: Y.Map<unknown>): void {
         yMap.set('boundElements', JSON.stringify(el.boundElements));
     } else {
         yMap.set('boundElements', null);
+    }
+
+    // Ports (custom connection points)
+    if (el.ports) {
+        yMap.set('ports', JSON.stringify(el.ports));
+    }
+
+    // Line style extension (gradient, taper, flow animation)
+    if ('lineStyle' in el && (el as any).lineStyle) {
+        yMap.set('lineStyle', JSON.stringify((el as any).lineStyle));
+    }
+
+    // Ports (custom connection points)
+    if (el.ports) {
+        yMap.set('ports', JSON.stringify(el.ports));
+    }
+
+    // Line style extension (gradient, taper, flow animation)
+    if ('lineStyle' in el && (el as any).lineStyle) {
+        yMap.set('lineStyle', JSON.stringify((el as any).lineStyle));
     }
 
     // Group IDs
@@ -125,10 +145,12 @@ export function yMapToElement(yMap: Y.Map<unknown>): CanvasElement | null {
         rotation: yMap.get('rotation') ?? 0,
         isLocked: yMap.get('isLocked') ?? false,
         isVisible: yMap.get('isVisible') ?? true,
+        version: yMap.get('version') ?? 0,
         style,
         boundElements: safeParseJSON(yMap.get('boundElements') as string | null) ?? null,
         groupIds: safeParseJSON(yMap.get('groupIds') as string | null) ?? undefined,
         sortOrder: yMap.get('sortOrder') ?? undefined,
+        ports: safeParseJSON(yMap.get('ports') as string | null) ?? undefined,
     };
 
     // Type-specific fields
@@ -146,6 +168,10 @@ export function yMapToElement(yMap: Y.Map<unknown>): CanvasElement | null {
             if (type === 'arrow') {
                 base.startArrowhead = yMap.get('startArrowhead') ?? null;
                 base.endArrowhead = yMap.get('endArrowhead') ?? 'arrow';
+            }
+            {
+                const ls = safeParseJSON(yMap.get('lineStyle') as string | null);
+                if (ls) base.lineStyle = ls;
             }
             break;
         case 'freedraw':

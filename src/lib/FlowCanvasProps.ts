@@ -1,4 +1,4 @@
-import type { CanvasElement, ElementStyle, ToolType } from '../types';
+import type { CanvasElement, ElementStyle, ToolType, ConnectionConfig } from '../types';
 import type { ContextMenuItem } from '../components/ContextMenu/ContextMenu';
 import type { CollaborationConfig } from '../collaboration/types';
 import type { CustomElementConfig } from '../utils/elementRegistry';
@@ -177,6 +177,26 @@ export interface FlowCanvasProps {
      * ```
      */
     customElementTypes?: CustomElementConfig[];
+
+    // ─── Connection / Binding Configuration ───────────────────
+
+    /**
+     * Configure the connection/binding system behavior.
+     * Controls snap thresholds, port visibility, default line styles, and more.
+     *
+     * @example
+     * ```tsx
+     * <FlowCanvas
+     *   connectionConfig={{
+     *     enablePorts: true,
+     *     snapThreshold: 20,
+     *     defaultLineType: 'elbow',
+     *   }}
+     * />
+     * ```
+     */
+    connectionConfig?: ConnectionConfig;
+
     // ─── Worker Configuration ─────────────────────────────────
 
     /**

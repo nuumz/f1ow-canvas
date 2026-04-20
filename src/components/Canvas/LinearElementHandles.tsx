@@ -12,7 +12,7 @@ import { Circle, Group } from 'react-konva';
 import type Konva from 'konva';
 import type { ArrowElement, LineElement, TextElement, Point, CanvasElement, SnapTarget, Binding } from '@/types';
 import { useLinearEditStore } from '@/store/useLinearEditStore';
-import { findNearestSnapTarget, computeBindingGap } from '@/utils/connection';
+import { findNearestSnapTarget, computeBindingGap, createBindingFromSnap } from '@/utils/connection';
 import { computeCurveControlPoint, quadBezierAt, curvatureFromDragPoint, CURVE_RATIO } from '@/utils/curve';
 import { computePointsBounds } from '@/utils/geometry';
 import { LABEL_PADDING_H, LABEL_PADDING_V, LABEL_MIN_WIDTH } from '@/utils/labelMetrics';
@@ -207,12 +207,8 @@ const LinearElementHandles: React.FC<Props> = ({
                     // correct entry/exit direction during drag.  Without this,
                     // the elbow preview path diverges from the final path that
                     // is computed once the binding is committed on drag end.
-                    const previewBinding: Binding = {
-                        elementId: snap.elementId,
-                        fixedPoint: snap.fixedPoint,
-                        gap: dragGap,
-                        isPrecise: snap.isPrecise,
-                    };
+                    const targetEl = allElements.find(e => e.id === snap.elementId);
+                    const previewBinding: Binding = createBindingFromSnap(snap, dragGap, targetEl?.version ?? 0);
                     if (idx === 0) {
                         bindingUpdates.startBinding = previewBinding;
                     } else {
@@ -283,12 +279,8 @@ const LinearElementHandles: React.FC<Props> = ({
 
                 if (snap) {
                     const gap = computeBindingGap(element.style.strokeWidth ?? 2);
-                    const binding: Binding = {
-                        elementId: snap.elementId,
-                        fixedPoint: snap.fixedPoint,
-                        gap,
-                        isPrecise: snap.isPrecise,
-                    };
+                    const targetEl = allElements.find(e => e.id === snap.elementId);
+                    const binding: Binding = createBindingFromSnap(snap, gap, targetEl?.version ?? 0);
                     if (idx === 0) {
                         updates.startBinding = binding;
                     } else {
