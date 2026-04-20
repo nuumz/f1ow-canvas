@@ -22,6 +22,8 @@ interface Props {
     snapTarget: SnapTarget | null;
     /** Whether to render at all (only during line/arrow tool) */
     visible: boolean;
+    /** Whether to render the center binding indicator */
+    showCenterIndicator?: boolean;
     /** Accent color */
     color?: string;
     /** Current viewport scale for LOD */
@@ -180,6 +182,7 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
     elements,
     snapTarget,
     visible,
+    showCenterIndicator = true,
     color = '#4f8df7',
     viewportScale = 1,
 }) => {
@@ -214,7 +217,7 @@ const ConnectionPointsOverlay: React.FC<Props> = ({
                 />
             )}
             {/* Center indicator — shown when snap will use center binding */}
-            {!snapTarget.isPrecise && (() => {
+            {showCenterIndicator && !snapTarget.isPrecise && (() => {
                 // For rotated shapes, the visual center is rotated around the
                 // shape origin (x, y). Compute proper world-space center.
                 const rot = targetEl.rotation || 0;

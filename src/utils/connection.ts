@@ -795,21 +795,20 @@ export function recomputeBoundPoints(
     };
 
     // Helper: for elbow connectors with center (imprecise) bindings,
-    // compute the edge point on the ELBOW-PREFERRED face rather than
-    // the geometrically-nearest face. This ensures the edge point and
-    // the elbow routing direction are consistent.
-    //
-    // For vertical-preferred directions (diagonal configs), this places
-    // the connection point on the top/bottom face center instead of
-    // side faces — producing routing that goes ABOVE/BELOW shapes.
+    // compute the edge point on the preferred face rather than the
+    // geometrically-nearest face. Preference is corridor-aware when both
+    // shapes are known: use the axis with the smaller inter-shape gap,
+    // otherwise fall back to the point-based elbow heuristic.
     const isElbow = connector.lineType === 'elbow';
 
     const getElbowFaceEdgePoint = (
         el: CanvasElement,
         toward: Point,
         gap: number,
+        towardElement?: CanvasElement,
+        towardBinding?: Binding | null,
     ): Point => {
-        const prefDir: Direction = getElbowPreferredDirection(el, toward);
+        const prefDir: Direction = getElbowPreferredDirection(el, toward, towardElement, towardBinding);
         const cx = el.x + el.width / 2;
         const cy = el.y + el.height / 2;
         // Place target far along the preferred direction so getEdgePoint
@@ -826,11 +825,11 @@ export function recomputeBoundPoints(
     };
 
     // Select the appropriate edge-point function for non-precise bindings:
-    // - Elbow connectors use getElbowFaceEdgePoint (prefers vertical exits)
+    // - Elbow connectors use getElbowFaceEdgePoint (prefers the clearest corridor)
     // - Other connectors use getEdgePoint (geometrically nearest face)
     const getCenterEdgePoint = isElbow
-        ? (el: CanvasElement, _toward: Point, gap: number): Point =>
-            getElbowFaceEdgePoint(el, _toward, gap)
+        ? (el: CanvasElement, _toward: Point, gap: number, towardElement?: CanvasElement, towardBinding?: Binding | null): Point =>
+            getElbowFaceEdgePoint(el, _toward, gap, towardElement, towardBinding)
         : getEdgePoint;
 
     // Two-pass computation for better accuracy when both ends are bound.
@@ -841,13 +840,13 @@ export function recomputeBoundPoints(
             startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
         } else {
             const endAnchor = getAnchorDir(endBinding, endEl);
-            startPt = getCenterEdgePoint(startEl, endAnchor, startBinding.gap);
+            startPt = getCenterEdgePoint(startEl, endAnchor, startBinding.gap, endEl, endBinding);
         }
         if (endBinding.isPrecise) {
             endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
         } else {
             const startAnchor = getAnchorDir(startBinding, startEl);
-            endPt = getCenterEdgePoint(endEl, startAnchor, endBinding.gap);
+            endPt = getCenterEdgePoint(endEl, startAnchor, endBinding.gap, startEl, startBinding);
         }
 
         // Pass 2: Refine using pass-1 results as direction hints.
@@ -855,12 +854,12 @@ export function recomputeBoundPoints(
         if (startBinding.isPrecise) {
             startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
         } else if (!startBinding.isPrecise) {
-            startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap);
+            startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, endEl, endBinding);
         }
         if (endBinding.isPrecise) {
             endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
         } else if (!endBinding.isPrecise) {
-            endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap);
+            endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, startEl, startBinding);
         }
     } else {
         // One-sided binding
@@ -868,14 +867,14 @@ export function recomputeBoundPoints(
             if (startBinding.isPrecise) {
                 startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
             } else {
-                startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap);
+                startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, endEl, endBinding);
             }
         }
         if (endBinding && endEl) {
             if (endBinding.isPrecise) {
                 endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
             } else {
-                endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap);
+                endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, startEl, startBinding);
             }
         }
     }

@@ -567,6 +567,18 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         return map;
     }, [resolvedElements]);
 
+    const linearEditElement = useMemo(() => {
+        if (!linearEdit.elementId) return undefined;
+        const el = resolvedElementMap.get(linearEdit.elementId);
+        if (!el || (el.type !== 'line' && el.type !== 'arrow')) return undefined;
+        return el as LineElement | ArrowElement;
+    }, [linearEdit.elementId, resolvedElementMap]);
+
+    const showCenterSnapIndicator = !(
+        isLinearDragging &&
+        linearEditElement?.lineType === 'elbow'
+    );
+
     // ─── Performance: viewport culling for large flows ────────
     // Only render elements visible in the current viewport.
     // Selected elements are always included for transformer handles.
@@ -1395,10 +1407,6 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 }
             }
 
-            // ─── Buffer into batch ────────────────────────────
-            if (!dragBatchRef.current) dragBatchRef.current = new Map();
-            dragBatchRef.current.set(id, updates);
-
             // ─── Imperatively move shape-bound text during drag ──
             // Shape + bound text = one visual unit.  Move text nodes
             // directly for frame-perfect sync (store updates are deferred).
@@ -1410,11 +1418,25 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 syncBoundTextNodes(el, nx, ny, nw, nh);
             }
 
-            // Schedule flush via microtask (runs after all sync onDragMove
-            // callbacks in the same frame, but before the next paint).
-            if (!dragFlushScheduledRef.current) {
-                dragFlushScheduledRef.current = true;
-                queueMicrotask(flushDragBatch);
+            // ─── Flush strategy ───────────────────────────────
+            // Single-element drag: flush SYNCHRONOUSLY.  The microtask
+            // indirection causes a 1-frame lag where the shape is moved
+            // by Konva's internal drag logic but the bound connectors
+            // haven't recomputed yet — visible as flicker at the source
+            // endpoint of arrows attached to the dragged shape.
+            //
+            // Multi-element drag (2..SKIP_THRESHOLD): Konva fires
+            // onDragMove once per selected element in the same frame, so
+            // buffer via microtask to coalesce into a single store write.
+            if (selectedIds.length <= 1) {
+                useCanvasStore.getState().batchUpdateElements([{ id, updates }]);
+            } else {
+                if (!dragBatchRef.current) dragBatchRef.current = new Map();
+                dragBatchRef.current.set(id, updates);
+                if (!dragFlushScheduledRef.current) {
+                    dragFlushScheduledRef.current = true;
+                    queueMicrotask(flushDragBatch);
+                }
             }
         },
         [readOnly, flushDragBatch, syncBoundTextNodes]
@@ -2319,9 +2341,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
                         {/* Linear element edit handles — needs listening for drag */}
                         {isLinearEditing && (() => {
-                            const editEl = resolvedElementMap.get(
-                                linearEdit.elementId ?? '',
-                            ) as LineElement | ArrowElement | undefined;
+                            const editEl = linearEditElement;
                             if (!editEl) return null;
                             return (
                                 <LinearElementHandles
@@ -2371,6 +2391,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                             visible={
                                 ((activeTool === 'line' || activeTool === 'arrow') || isLinearDragging) && !readOnly
                             }
+                            showCenterIndicator={showCenterSnapIndicator}
                             color={theme.selectionColor}
                             viewportScale={viewport.scale}
                         />

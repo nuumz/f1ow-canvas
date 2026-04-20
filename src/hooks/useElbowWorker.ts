@@ -7,8 +7,8 @@
  * Behavior:
  * 1. On mount / element change: sends element snapshot to Worker
  * 2. When routing params change: requests async route computation
- * 3. Returns cached/previous result until the Worker responds
- * 4. Falls back to synchronous computation for small canvases
+ * 3. Exposes Worker results only when they match the current route params
+ * 4. Falls back to synchronous computation for small canvases or while a fresh Worker result is pending
  *
  * Usage in ArrowShape/LineShape:
  * ```ts
@@ -23,6 +23,48 @@ import { getElbowWorkerManager, disposeElbowWorkerManager } from '@/utils/elbowW
 import type { RouteParams } from '@/utils/elbowWorkerManager';
 import { computeElbowPoints, simplifyElbowPath } from '@/utils/elbow';
 import { useWorkerConfig } from '@/contexts/WorkerConfigContext';
+
+interface AsyncRouteResult {
+    key: string;
+    points: number[];
+}
+
+function serializeBinding(binding: Binding | null): string {
+    if (!binding) return '';
+    return [
+        binding.elementId,
+        binding.anchor ?? '',
+        binding.portId ?? '',
+        binding.snapMode ?? '',
+        binding.elementVersion,
+        binding.isPrecise ? 1 : 0,
+        binding.gap,
+        binding.fixedPoint[0],
+        binding.fixedPoint[1],
+    ].join(':');
+}
+
+function buildRouteKey(
+    params: {
+        startWorld: Point;
+        endWorld: Point;
+        startBinding: Binding | null;
+        endBinding: Binding | null;
+        minStubLength?: number;
+    },
+    fingerprint: string,
+): string {
+    return [
+        params.startWorld.x,
+        params.startWorld.y,
+        params.endWorld.x,
+        params.endWorld.y,
+        params.minStubLength ?? '',
+        fingerprint,
+        serializeBinding(params.startBinding),
+        serializeBinding(params.endBinding),
+    ].join('|');
+}
 
 /**
  * Hook that computes elbow route points, offloading to a Web Worker
@@ -46,12 +88,25 @@ export function useElbowWorker(
     allElements: CanvasElement[],
     fingerprint: string,
 ): number[] | null {
-    const [asyncResult, setAsyncResult] = useState<number[] | null>(null);
+    const [asyncResult, setAsyncResult] = useState<AsyncRouteResult | null>(null);
     const elementsRef = useRef<CanvasElement[]>(allElements);
     const workerConfigCtx = useWorkerConfig();
     const workerConfig = workerConfigCtx?.elbowWorkerConfig;
     // Monotonically increasing request counter to discard stale Worker results
     const requestEpochRef = useRef(0);
+    const routeKey = useMemo(
+        () => buildRouteKey(params, fingerprint),
+        [
+            params.startWorld.x,
+            params.startWorld.y,
+            params.endWorld.x,
+            params.endWorld.y,
+            params.startBinding,
+            params.endBinding,
+            params.minStubLength,
+            fingerprint,
+        ],
+    );
 
     elementsRef.current = allElements;
 
@@ -79,6 +134,7 @@ export function useElbowWorker(
         const mgr = getElbowWorkerManager(workerConfig);
         let cancelled = false;
         const epoch = ++requestEpochRef.current;
+        const requestKey = routeKey;
 
         const routeParams: RouteParams = {
             startWorld: params.startWorld,
@@ -93,7 +149,7 @@ export function useElbowWorker(
             mgr.computeRoute(routeParams).then(points => {
                 // Drop stale results — a newer request has been issued
                 if (!cancelled && requestEpochRef.current === epoch) {
-                    setAsyncResult(points);
+                    setAsyncResult({ key: requestKey, points });
                 }
             });
         } else {
@@ -107,7 +163,7 @@ export function useElbowWorker(
                 params.minStubLength,
             );
             const simplified = simplifyElbowPath(raw);
-            setAsyncResult(simplified);
+            setAsyncResult({ key: requestKey, points: simplified });
         }
 
         return () => { cancelled = true; };
@@ -118,9 +174,10 @@ export function useElbowWorker(
         params.startBinding, params.endBinding,
         params.minStubLength,
         fingerprint,
+        routeKey,
     ]);
 
-    return asyncResult;
+    return asyncResult?.key === routeKey ? asyncResult.points : null;
 }
 
 /**

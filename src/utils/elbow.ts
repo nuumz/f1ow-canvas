@@ -55,6 +55,8 @@ interface BBox {
     height: number;
 }
 
+type BoxLike = Pick<BBox, 'x' | 'y' | 'width' | 'height'>;
+
 // ─── Constants ────────────────────────────────────────────────
 
 /**
@@ -154,8 +156,11 @@ function isVerticalDir(dir: Direction): boolean {
  * shapes at their vertical center — visually too close to objects and
  * often requiring more bends.
  *
- * Only uses horizontal exits when the target is strongly horizontally
- * aligned (>3× horizontal dominance after normalizing by shape size).
+ * When both endpoint shapes are known, prefer the axis with the smaller
+ * inter-shape gap (or the orthogonal axis with less overlap). This makes
+ * diagonal routes look more intentional than a pure center-to-center
+ * heuristic. If only a target point is known, fall back to the normalized
+ * center-delta heuristic with a slight vertical bias.
  *
  * This function should be used by BOTH:
  * - The binding system (connection.ts) to compute edge points for
@@ -165,13 +170,69 @@ function isVerticalDir(dir: Direction): boolean {
  * For PRECISE bindings, always use directionFromFixedPoint instead.
  */
 export function getElbowPreferredDirection(
-    shape: { x: number; y: number; width: number; height: number },
+    shape: BoxLike,
     targetPoint: Point,
+    targetShape?: BoxLike | null,
+    targetBinding?: Binding | null,
 ): Direction {
     const cx = shape.x + shape.width / 2;
     const cy = shape.y + shape.height / 2;
     const dx = targetPoint.x - cx;
     const dy = targetPoint.y - cy;
+
+    if (targetShape) {
+        const shapeRight = shape.x + shape.width;
+        const shapeBottom = shape.y + shape.height;
+        const targetRight = targetShape.x + targetShape.width;
+        const targetBottom = targetShape.y + targetShape.height;
+
+        const gapX = shapeRight < targetShape.x
+            ? targetShape.x - shapeRight
+            : targetRight < shape.x
+                ? shape.x - targetRight
+                : 0;
+        const gapY = shapeBottom < targetShape.y
+            ? targetShape.y - shapeBottom
+            : targetBottom < shape.y
+                ? shape.y - targetBottom
+                : 0;
+
+        const targetBindingHasAxis = Boolean(
+            targetBinding?.isPrecise &&
+            !(targetBinding.fixedPoint[0] === 0.5 && targetBinding.fixedPoint[1] === 0.5),
+        );
+        if (targetBindingHasAxis && gapX > 0 && gapY > 0) {
+            const targetDir = directionFromFixedPoint(targetBinding!.fixedPoint);
+            if (targetDir === 'left' || targetDir === 'right') {
+                return dx >= 0 ? 'right' : 'left';
+            }
+            return dy >= 0 ? 'down' : 'up';
+        }
+
+        if (gapX > 0 && gapY === 0) {
+            return dx >= 0 ? 'right' : 'left';
+        }
+        if (gapY > 0 && gapX === 0) {
+            return dy >= 0 ? 'down' : 'up';
+        }
+        if (gapX > 0 && gapY > 0) {
+            if (gapX < gapY) {
+                return dx >= 0 ? 'right' : 'left';
+            }
+            return dy >= 0 ? 'down' : 'up';
+        }
+
+        const overlapX = Math.max(0, Math.min(shapeRight, targetRight) - Math.max(shape.x, targetShape.x));
+        const overlapY = Math.max(0, Math.min(shapeBottom, targetBottom) - Math.max(shape.y, targetShape.y));
+
+        if (overlapX > overlapY) {
+            return dy >= 0 ? 'down' : 'up';
+        }
+        if (overlapY > overlapX) {
+            return dx >= 0 ? 'right' : 'left';
+        }
+    }
+
     const hw = (shape.width || 1) / 2;
     const hh = (shape.height || 1) / 2;
     const normDx = Math.abs(dx) / hw;
@@ -185,7 +246,7 @@ export function getElbowPreferredDirection(
     if (normDy > normDx * 3) {
         return dy >= 0 ? 'down' : 'up';
     }
-    // Diagonal: prefer vertical exit for cleaner elbow aesthetics
+    // Diagonal / tie: prefer vertical exit for cleaner elbow aesthetics
     return dy >= 0 ? 'down' : 'up';
 }
 
@@ -1275,13 +1336,15 @@ export function computeElbowPoints(
         !b.isPrecise ||
         (b.fixedPoint[0] === 0.5 && b.fixedPoint[1] === 0.5);
 
+    const startEl = startBinding ? elementMap.get(startBinding.elementId) : undefined;
+    const endEl = endBinding ? elementMap.get(endBinding.elementId) : undefined;
+
     // ── Determine exit direction from start ──
     let startDir: Direction;
     if (startBinding) {
         if (isCenterBinding(startBinding)) {
-            const startEl = elementMap.get(startBinding.elementId);
             startDir = startEl
-                ? getElbowPreferredDirection(startEl, endWorld)
+                ? getElbowPreferredDirection(startEl, endWorld, endEl, endBinding)
                 : directionFromPoints(startWorld, endWorld);
         } else {
             startDir = directionFromFixedPoint(startBinding.fixedPoint);
@@ -1294,9 +1357,8 @@ export function computeElbowPoints(
     let endDir: Direction;
     if (endBinding) {
         if (isCenterBinding(endBinding)) {
-            const endEl = elementMap.get(endBinding.elementId);
             endDir = endEl
-                ? getElbowPreferredDirection(endEl, startWorld)
+                ? getElbowPreferredDirection(endEl, startWorld, startEl, startBinding)
                 : directionFromPoints(endWorld, startWorld);
         } else {
             endDir = directionFromFixedPoint(endBinding.fixedPoint);
