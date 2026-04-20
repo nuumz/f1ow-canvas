@@ -177,6 +177,14 @@ const TextOverlayItem: React.FC<ItemProps> = React.memo(({
     // Hide when text is empty and not auto-editing
     const isVisible = !!(text || isEditing);
 
+    // Bound text (shape labels) is rendered inside the Konva layer so it
+    // shares the container's z-index and is correctly occluded by shapes
+    // stacked above the container. The HTML overlay still takes over
+    // during edit mode to provide WYSIWYG markdown editing.
+    if (isBound && !isEditing) {
+        return null;
+    }
+
     return (
         <div
             ref={divRef}
@@ -330,15 +338,21 @@ function enterEditMode(
     // Start from rendered markdown so inline styles remain visible while editing.
     div.innerHTML = createEditingMarkup(element.text || '');
 
-    // Focus & select all
-    div.focus();
-    const sel = window.getSelection();
-    if (sel) {
-        const range = document.createRange();
-        range.selectNodeContents(div);
-        sel.removeAllRanges();
-        sel.addRange(range);
-    }
+    // Focus & select all — defer to next frame so the browser's mousedown
+    // event (from the Stage click that created this element) finishes first.
+    // Without this, the Stage canvas steals focus immediately after we focus
+    // the contentEditable, triggering blur → finishEdit → delete empty text.
+    requestAnimationFrame(() => {
+        if (!editingRef.current) return;  // cancelled before focus
+        div.focus();
+        const sel = window.getSelection();
+        if (sel) {
+            const range = document.createRange();
+            range.selectNodeContents(div);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+    });
 
     // ── Auto-grow for connector labels (re-center over midpoint) ──
     let autoGrow: (() => void) | null = null;

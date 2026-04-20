@@ -128,6 +128,7 @@ const CanvasElementRenderer: React.FC<Props> = ({
                     isSelected={isSelected}
                     isGrouped={isGrouped}
                     onSelect={onSelect}
+                    onDoubleClick={onDoubleClick}
                     onChange={onChange}
                     onDragMove={onDragMove}
                     autoEdit={autoEditText}

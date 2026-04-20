@@ -27,6 +27,7 @@ interface Props {
     /** When true, individual drag is disabled — the parent KonvaGroup handles dragging */
     isGrouped?: boolean;
     onSelect: (id: string) => void;
+    onDoubleClick?: (id: string) => void;
     onChange: (id: string, updates: Partial<TextElement>) => void;
     onDragMove?: (id: string, updates: Partial<TextElement>) => void;
     /** If true, auto-opens the textarea editor immediately after mount */
@@ -46,6 +47,7 @@ const TextShape: React.FC<Props> = ({
     isSelected,
     isGrouped,
     onSelect,
+    onDoubleClick,
     onChange,
     onDragMove,
     autoEdit,
@@ -113,20 +115,13 @@ const TextShape: React.FC<Props> = ({
     }, [id, height, width, isBound, onChange]);
 
     // Sync size when text/style changes.
-    // Skip the very first mount when the text element already has
-    // accurate dimensions (layer-transition remount). This prevents a
-    // spurious store update → re-render → flicker when moving between
-    // static and interactive layers.
-    const syncSizeInitRef = useRef(true);
+    // Also re-sync when autoEdit turns off (finish editing) so transformer
+    // bounds always match the newly-committed text.
     useEffect(() => {
-        if (syncSizeInitRef.current) {
-            syncSizeInitRef.current = false;
-            // Fresh creation (empty text, height ≤ 0) still needs initial sync
-            if (visibleText.trim() && height > 0) return;
-        }
+        if (isBound || autoEdit) return;
         const id = requestAnimationFrame(syncSize);
         return () => cancelAnimationFrame(id);
-    }, [visibleText, style.fontSize, style.fontFamily, syncSize]);
+    }, [visibleText, style.fontSize, style.fontFamily, isBound, autoEdit, syncSize]);
 
     // Effective position and size: bound text follows container.
     // Standalone text: don't pass width/height → Konva auto-measures.
@@ -139,6 +134,13 @@ const TextShape: React.FC<Props> = ({
     const effectiveAlign = isBound ? (textAlign || 'center') : undefined;
     const effectiveVerticalAlign = isBound ? (verticalAlign || 'middle') : undefined;
 
+    // Bound text: paint visibly here so it sits at the container's z-index
+    // inside the Konva layer (HTML overlay no longer renders bound text
+    // except during edit). Standalone text stays transparent — the HTML
+    // overlay still owns visual rendering for markdown.
+    const fillColor = isBound ? (style.strokeColor || '#1a1a1a') : 'transparent';
+    const textOpacity = isBound ? (style.opacity ?? 1) : 1;
+
     return (
         <Text
             ref={textRef}
@@ -148,7 +150,8 @@ const TextShape: React.FC<Props> = ({
             text={visibleText}
             fontSize={style.fontSize}
             fontFamily={style.fontFamily}
-            fill="transparent"
+            fill={fillColor}
+            opacity={textOpacity}
             lineHeight={LINE_HEIGHT}
             width={effectiveWidth}
             height={effectiveHeight}
@@ -156,12 +159,15 @@ const TextShape: React.FC<Props> = ({
             verticalAlign={effectiveVerticalAlign}
             wrap={isBound ? 'word' : 'none'}
             rotation={isBound ? (container?.rotation ?? rotation) : rotation}
-            transformsEnabled={(isBound ? (container?.rotation ?? rotation) : rotation) ? 'all' : 'position'}
+            // Text resize relies on Transformer scale; keep full transforms enabled.
+            transformsEnabled="all"
             visible={!autoEdit}
             draggable={isDraggable && !autoEdit}
             listening={!isBound}
             onClick={isBound ? undefined : () => onSelect(id)}
             onTap={isBound ? undefined : () => onSelect(id)}
+            onDblClick={isBound ? undefined : () => onDoubleClick?.(id)}
+            onDblTap={isBound ? undefined : () => onDoubleClick?.(id)}
             hitStrokeWidth={isBound ? 0 : 10}
             perfectDrawEnabled={false}
             onDragMove={isBound ? undefined : (e) => {

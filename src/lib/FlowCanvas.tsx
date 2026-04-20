@@ -75,6 +75,7 @@ import {
 } from '../utils/image';
 import { blurTextEditingTarget, isTextEditingTarget } from '../utils/editable';
 import { syncAfterDrag, computeBoundTextPosition, BOUND_TEXT_PADDING, CONTAINER_TYPES } from '../utils/dragSync';
+import { orderBoundTextWithContainers } from '../utils/textBinding';
 
 import type { FlowCanvasProps, FlowCanvasRef, ContextMenuContext } from './FlowCanvasProps';
 import { DEFAULT_THEME } from './FlowCanvasProps';
@@ -579,6 +580,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         selectedIds,
     );
 
+    // ─── Render order: bound text follows its container ──────
+    // Ensures shape labels share their container's z-index, so other
+    // shapes stacked above the container correctly occlude the label.
+    const orderedVisibleElements = useMemo(
+        () => orderBoundTextWithContainers(visibleElements),
+        [visibleElements],
+    );
+
     // ─── Performance: efficient (discretized) zoom for LOD ────
     // Snaps to power-of-2 steps so LOD decisions and stroke scaling
     // don't flicker during smooth zoom gestures.
@@ -670,7 +679,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
         const statics: CanvasElementType[] = [];
         const interactive: CanvasElementType[] = [];
-        for (const el of visibleElements) {
+        for (const el of orderedVisibleElements) {
             if (effectiveSelected.has(el.id)) {
                 interactive.push(el);
             } else {
@@ -688,7 +697,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         prevInteractiveRef.current = stableInteractive;
 
         return { staticElements: stableStatics, interactiveElements: stableInteractive };
-    }, [visibleElements, selectedIdsSet, drawingElementId]);
+    }, [visibleElements, orderedVisibleElements, selectedIdsSet, drawingElementId]);
 
     // ─── Performance: progressive rendering for static layer ──
     // When the static layer has a large number of elements, render
@@ -1601,6 +1610,13 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
             // Let consumer intercept — return true to prevent default
             if (onElementDoubleClick?.(id, el) === true) return;
+
+            // Standalone text → enter edit mode directly
+            if (el.type === 'text' && !(el as TextElement).containerId) {
+                setSel([id]);
+                setAutoEditTextId(id);
+                return;
+            }
 
             // Linear elements → create/edit text label (point edit via single click)
             if (el.type === 'line' || el.type === 'arrow') {
