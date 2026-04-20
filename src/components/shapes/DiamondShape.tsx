@@ -77,12 +77,16 @@ const DiamondShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
     if (roughness > 0) {
         const passes = getRoughPasses(roughness);
         const dash = getStrokeDash(style.strokeStyle, style.strokeWidth);
+        // Padding buffer for stroke jitter overshoot (keeps layer cache from clipping)
+        const pad = roughness >= 2 ? 8 : 4;
 
         return (
             <Shape
                 id={id}
                 x={x}
                 y={y}
+                width={width + pad * 2}
+                height={height + pad * 2}
                 rotation={rotation}
                 transformsEnabled={rotation ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {

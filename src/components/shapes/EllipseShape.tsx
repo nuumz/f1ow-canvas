@@ -90,25 +90,33 @@ const EllipseShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
         const passes = getRoughPasses(roughness);
         const rx = width / 2;
         const ry = height / 2;
+        // Padding buffer for stroke jitter overshoot (keeps layer cache from clipping)
+        const pad = roughness >= 2 ? 8 : 4;
 
         return (
             <Shape
                 id={id}
                 x={x + rx}
                 y={y + ry}
+                width={width + pad * 2}
+                height={height + pad * 2}
+                offsetX={rx + pad}
+                offsetY={ry + pad}
                 rotation={rotation}
                 transformsEnabled={rotation ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {
+                    const cx = rx + pad;
+                    const cy = ry + pad;
                     // 1. Fill with clean ellipse path
                     ctx.beginPath();
-                    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+                    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
                     ctx.fillShape(shape);
 
                     // 2. Rough stroke (per-pass seeding for organic look)
                     for (let p = 0; p < passes; p++) {
                         const rng = createRNG(id + ':' + p);
                         ctx.beginPath();
-                        drawRoughEllipseStrokes(ctx, 0, 0, rx, ry, roughness, rng, 1, style.strokeWidth);
+                        drawRoughEllipseStrokes(ctx, cx, cy, rx, ry, roughness, rng, 1, style.strokeWidth);
                         ctx.strokeShape(shape);
                     }
                 }}

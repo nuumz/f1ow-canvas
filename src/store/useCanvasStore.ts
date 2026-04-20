@@ -32,6 +32,26 @@ const GEOMETRY_KEYS = new Set<string>([
     'cornerRadius', 'radiusX', 'radiusY',
 ]);
 
+// ─── Z-order helpers ──────────────────────────────────────────
+
+/**
+ * Expand a set of element ids to include any text elements bound to those
+ * shapes (via `containerId`). Ensures that z-order operations keep
+ * shape-bound labels on top of their container.
+ */
+function expandWithBoundChildren(
+    ids: string[],
+    elements: CanvasElement[],
+): Set<string> {
+    const idSet = new Set(ids);
+    for (const el of elements) {
+        if (el.type === 'text' && el.containerId && idSet.has(el.containerId)) {
+            idSet.add(el.id);
+        }
+    }
+    return idSet;
+}
+
 // ─── History Entry ────────────────────────────────────────────
 
 /** Single element diff: tracks what changed for one element */
@@ -388,8 +408,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     bringToFront: (ids) => {
         set((state) => {
-            const others = state.elements.filter((el) => !ids.includes(el.id));
-            const targets = state.elements.filter((el) => ids.includes(el.id));
+            const fullIds = expandWithBoundChildren(ids, state.elements);
+            const others = state.elements.filter((el) => !fullIds.has(el.id));
+            const targets = state.elements.filter((el) => fullIds.has(el.id));
             return { elements: [...others, ...targets] };
         });
         get().pushHistory();
@@ -397,8 +418,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     sendToBack: (ids) => {
         set((state) => {
-            const others = state.elements.filter((el) => !ids.includes(el.id));
-            const targets = state.elements.filter((el) => ids.includes(el.id));
+            const fullIds = expandWithBoundChildren(ids, state.elements);
+            const others = state.elements.filter((el) => !fullIds.has(el.id));
+            const targets = state.elements.filter((el) => fullIds.has(el.id));
             return { elements: [...targets, ...others] };
         });
         get().pushHistory();
@@ -407,7 +429,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     bringForward: (ids) => {
         set((state) => {
             const elems = [...state.elements];
-            const idSet = new Set(ids);
+            const idSet = expandWithBoundChildren(ids, state.elements);
             // Move each target one position up (toward end)
             for (let i = elems.length - 2; i >= 0; i--) {
                 if (idSet.has(elems[i].id) && !idSet.has(elems[i + 1].id)) {
@@ -422,7 +444,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     sendBackward: (ids) => {
         set((state) => {
             const elems = [...state.elements];
-            const idSet = new Set(ids);
+            const idSet = expandWithBoundChildren(ids, state.elements);
             // Move each target one position down (toward start)
             for (let i = 1; i < elems.length; i++) {
                 if (idSet.has(elems[i].id) && !idSet.has(elems[i - 1].id)) {

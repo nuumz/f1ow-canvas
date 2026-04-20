@@ -4,6 +4,7 @@ import { useLinearEditStore } from '@/store/useLinearEditStore';
 import type { ToolType, LineElement, ArrowElement } from '@/types';
 import { setClipboard } from '@/utils/clipboard';
 import { gatherElementsForCopy } from '@/utils/clone';
+import { isTextEditingTarget } from '@/utils/editable';
 import { GRID_SIZE } from '@/constants';
 
 /**
@@ -42,9 +43,7 @@ export function useKeyboardShortcuts(
         if (!enabled) return;
 
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Skip if typing in an input/textarea
-            const tag = (e.target as HTMLElement).tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            if (isTextEditingTarget(e.target)) return;
 
             const isCmd = e.metaKey || e.ctrlKey;
 

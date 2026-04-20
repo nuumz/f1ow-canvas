@@ -73,6 +73,7 @@ import {
     resolveImageSource,
     getImageFilesFromDataTransfer,
 } from '../utils/image';
+import { blurTextEditingTarget, isTextEditingTarget } from '../utils/editable';
 import { syncAfterDrag, computeBoundTextPosition, BOUND_TEXT_PADDING, CONTAINER_TYPES } from '../utils/dragSync';
 
 import type { FlowCanvasProps, FlowCanvasRef, ContextMenuContext } from './FlowCanvasProps';
@@ -81,6 +82,7 @@ import { useCollaboration } from '../collaboration/useCollaboration';
 import CursorOverlay from '../collaboration/CursorOverlay';
 import { WorkerConfigContext } from '../contexts/WorkerConfigContext';
 import { AnnotationsOverlay } from '../components/Canvas/AnnotationsOverlay';
+import { TextHtmlOverlay } from '../components/Canvas/TextHtmlOverlay';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -830,9 +832,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // Space key listener (hold Space to pan)
     useEffect(() => {
         const onDown = (e: KeyboardEvent) => {
-            // Skip if typing in an input/textarea
-            const tag = (e.target as HTMLElement).tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            if (isTextEditingTarget(e.target)) return;
             if (e.code === 'Space' && !spaceKeyRef.current) {
                 e.preventDefault();
                 spaceKeyRef.current = true;
@@ -925,9 +925,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         if (readOnly) return;
 
         const handlePaste = (e: ClipboardEvent) => {
-            // Skip if typing in an input/textarea
-            const tag = (e.target as HTMLElement).tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            if (isTextEditingTarget(e.target)) return;
 
             // Synchronously extract image data before browser invalidates clipboardData
             const imageData = extractImageDataFromClipboard(e);
@@ -1091,24 +1089,21 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             if (ctx.activeTool === 'hand' || isSpacePanning) return;
 
             // ── Commit any in-progress text edit BEFORE selection changes ──
-            // When text is being edited via a DOM textarea, mousedown fires
+            // When text is being edited via the HTML overlay, mousedown fires
             // BEFORE blur.  If the selection changes here (e.g. clearSelection
             // on empty canvas click), the TextShape unmounts/remounts between
             // layers.  The remounted component would re-open the editor with
             // stale text content (the value before the edit), and when that
-            // second textarea eventually blurs it overwrites the committed
+            // second editor eventually blurs it overwrites the committed
             // value — reverting the user's edit.
             //
-            // Fix: explicitly blur() the textarea first.  This fires the
+            // Fix: explicitly blur() the active editable element first.  This fires the
             // existing finishEdit handler synchronously, which commits the
             // new text to the store and cleans up editing state.  By the time
             // the tool handler runs (and potentially calls clearSelection),
             // the store already has the correct text.
             if (editingTextId) {
-                const activeEl = document.activeElement;
-                if (activeEl?.tagName === 'TEXTAREA') {
-                    (activeEl as HTMLTextAreaElement).blur();
-                }
+                blurTextEditingTarget(document.activeElement);
             }
 
             // Delegate to tool handler
@@ -1612,7 +1607,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 // Check if already has a bound text element
                 const existingTextBinding = el.boundElements?.find(be => be.type === 'text');
                 if (existingTextBinding) {
-                    setSel([existingTextBinding.id]);
+                    setSel([existingTextBinding.id, id]);
                     setAutoEditTextId(existingTextBinding.id);
                     return;
                 }
@@ -1649,7 +1644,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                     boundElements: [...currentBound, { id: textId, type: 'text' }],
                 });
 
-                setSel([textId]);
+                setSel([textId, id]);
                 setAutoEditTextId(textId);
                 return;
             }
@@ -2406,6 +2401,15 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                         )}
                     </Layer>
                 </Stage>
+
+                {/* Text HTML Overlay — markdown rendering + editing */}
+                <TextHtmlOverlay
+                    viewport={viewport}
+                    autoEditTextId={autoEditTextId}
+                    onEditStart={handleTextEditStart}
+                    onEditEnd={handleTextEditEnd}
+                    onChange={handleElementChange}
+                />
             </div>
 
             {/* Context Menu */}
