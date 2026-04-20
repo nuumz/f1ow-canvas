@@ -92,6 +92,37 @@ describe('getElbowPreferredDirection', () => {
 });
 
 describe('center-bound elbow routing', () => {
+    it('switches to the alternate direction pair when the primary ambiguous route is blocked by an intermediate obstacle', () => {
+        const start = makeRect('start', 0, 0, 100, 100);
+        const end = makeRect('end', 220, 220, 100, 100);
+        const blocker = makeRect('blocker', 20, 110, 120, 90);
+        const gap = computeBindingGap(2);
+        const startBinding = makeCenterBinding(start.id, gap);
+        const endBinding = makeCenterBinding(end.id, gap);
+        const arrow = makeElbowArrow(startBinding, endBinding);
+
+        const recomputed = recomputeBoundPoints(arrow, [start, end, blocker, arrow]);
+        expect(recomputed).not.toBeNull();
+        expect(recomputed!.x).toBeCloseTo(start.x + start.width + gap, 0);
+        expect(recomputed!.y).toBeCloseTo(start.y + start.height / 2, 0);
+
+        const recomputedPoints = recomputed!.points as number[];
+        const endWorld = {
+            x: (recomputed!.x as number) + recomputedPoints[recomputedPoints.length - 2],
+            y: (recomputed!.y as number) + recomputedPoints[recomputedPoints.length - 1],
+        };
+        const routed = computeElbowPoints(
+            { x: recomputed!.x as number, y: recomputed!.y as number },
+            endWorld,
+            startBinding,
+            endBinding,
+            [start, end, blocker, arrow],
+        );
+
+        expect(routed[2]).toBeGreaterThan(routed[0]);
+        expect(routed[3]).toBeCloseTo(routed[1], 3);
+    });
+
     it('prefers a horizontal source exit when the target is diagonally down-right but anchored on its left face', () => {
         const source = makeRect('F0O07LEkT6YR', 441, 336, 138, 122);
         const target = makeRect('OXiWlKH4BPBJ', 704, 505, 121, 97);

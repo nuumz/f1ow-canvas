@@ -30,7 +30,7 @@ import type {
     Port,
     SnapMode,
 } from '@/types';
-import { getElbowPreferredDirection } from '@/utils/elbow';
+import { collectElbowIntermediateObstacles, selectElbowDirectionPair } from '@/utils/elbow';
 import type { Direction } from '@/utils/elbow';
 import { computeCurveControlPoint, quadBezierAt, CURVE_RATIO } from '@/utils/curve';
 
@@ -771,6 +771,7 @@ export function recomputeBoundPoints(
 
     const startEl = startBinding ? elementMap.get(startBinding.elementId) : undefined;
     const endEl = endBinding ? elementMap.get(endBinding.elementId) : undefined;
+    const isElbow = connector.lineType === 'elbow';
 
     // Helper: get anchor point for a binding.
     // Uses resolveBindingPoint for anchor/port-aware resolution.
@@ -794,28 +795,46 @@ export function recomputeBoundPoints(
         return getEdgePointFromFixedPoint(el, resolvedFp, binding.gap, toward);
     };
 
-    // Helper: for elbow connectors with center (imprecise) bindings,
-    // compute the edge point on the preferred face rather than the
-    // geometrically-nearest face. Preference is corridor-aware when both
-    // shapes are known: use the axis with the smaller inter-shape gap,
-    // otherwise fall back to the point-based elbow heuristic.
-    const isElbow = connector.lineType === 'elbow';
+    const directionStartRef: Point = startBinding && startEl
+        ? startBinding.isPrecise
+            ? getPreciseEdgePoint(startBinding, startEl, endPt)
+            : { x: startEl.x + startEl.width / 2, y: startEl.y + startEl.height / 2 }
+        : startPt;
+    const directionEndRef: Point = endBinding && endEl
+        ? endBinding.isPrecise
+            ? getPreciseEdgePoint(endBinding, endEl, startPt)
+            : { x: endEl.x + endEl.width / 2, y: endEl.y + endEl.height / 2 }
+        : endPt;
+
+    const elbowDirectionPair = isElbow
+        ? (() => {
+            const excludeIds = new Set<string>();
+            if (startBinding?.elementId) excludeIds.add(startBinding.elementId);
+            if (endBinding?.elementId) excludeIds.add(endBinding.elementId);
+            return selectElbowDirectionPair({
+                startWorld: directionStartRef,
+                endWorld: directionEndRef,
+                startBinding,
+                endBinding,
+                startShape: startEl ?? null,
+                endShape: endEl ?? null,
+                intermediateObstacles: collectElbowIntermediateObstacles(directionStartRef, directionEndRef, allElements, excludeIds),
+            });
+        })()
+        : null;
 
     const getElbowFaceEdgePoint = (
         el: CanvasElement,
-        toward: Point,
         gap: number,
-        towardElement?: CanvasElement,
-        towardBinding?: Binding | null,
+        preferredDir: Direction,
     ): Point => {
-        const prefDir: Direction = getElbowPreferredDirection(el, toward, towardElement, towardBinding);
         const cx = el.x + el.width / 2;
         const cy = el.y + el.height / 2;
         // Place target far along the preferred direction so getEdgePoint
         // picks the correct face (center of that face).
         const far = Math.max(el.width, el.height) * 10;
         let target: Point;
-        switch (prefDir) {
+        switch (preferredDir) {
             case 'up':    target = { x: cx, y: cy - far }; break;
             case 'down':  target = { x: cx, y: cy + far }; break;
             case 'left':  target = { x: cx - far, y: cy }; break;
@@ -828,8 +847,8 @@ export function recomputeBoundPoints(
     // - Elbow connectors use getElbowFaceEdgePoint (prefers the clearest corridor)
     // - Other connectors use getEdgePoint (geometrically nearest face)
     const getCenterEdgePoint = isElbow
-        ? (el: CanvasElement, _toward: Point, gap: number, towardElement?: CanvasElement, towardBinding?: Binding | null): Point =>
-            getElbowFaceEdgePoint(el, _toward, gap, towardElement, towardBinding)
+        ? (el: CanvasElement, _toward: Point, gap: number, preferredDir: Direction): Point =>
+            getElbowFaceEdgePoint(el, gap, preferredDir)
         : getEdgePoint;
 
     // Two-pass computation for better accuracy when both ends are bound.
@@ -840,13 +859,13 @@ export function recomputeBoundPoints(
             startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
         } else {
             const endAnchor = getAnchorDir(endBinding, endEl);
-            startPt = getCenterEdgePoint(startEl, endAnchor, startBinding.gap, endEl, endBinding);
+            startPt = getCenterEdgePoint(startEl, endAnchor, startBinding.gap, elbowDirectionPair?.startDir ?? 'right');
         }
         if (endBinding.isPrecise) {
             endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
         } else {
             const startAnchor = getAnchorDir(startBinding, startEl);
-            endPt = getCenterEdgePoint(endEl, startAnchor, endBinding.gap, startEl, startBinding);
+            endPt = getCenterEdgePoint(endEl, startAnchor, endBinding.gap, elbowDirectionPair?.endDir ?? 'left');
         }
 
         // Pass 2: Refine using pass-1 results as direction hints.
@@ -854,12 +873,12 @@ export function recomputeBoundPoints(
         if (startBinding.isPrecise) {
             startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
         } else if (!startBinding.isPrecise) {
-            startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, endEl, endBinding);
+            startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, elbowDirectionPair?.startDir ?? 'right');
         }
         if (endBinding.isPrecise) {
             endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
         } else if (!endBinding.isPrecise) {
-            endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, startEl, startBinding);
+            endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, elbowDirectionPair?.endDir ?? 'left');
         }
     } else {
         // One-sided binding
@@ -867,14 +886,14 @@ export function recomputeBoundPoints(
             if (startBinding.isPrecise) {
                 startPt = getPreciseEdgePoint(startBinding, startEl, endPt);
             } else {
-                startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, endEl, endBinding);
+                startPt = getCenterEdgePoint(startEl, endPt, startBinding.gap, elbowDirectionPair?.startDir ?? 'right');
             }
         }
         if (endBinding && endEl) {
             if (endBinding.isPrecise) {
                 endPt = getPreciseEdgePoint(endBinding, endEl, startPt);
             } else {
-                endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, startEl, startBinding);
+                endPt = getCenterEdgePoint(endEl, startPt, endBinding.gap, elbowDirectionPair?.endDir ?? 'left');
             }
         }
     }

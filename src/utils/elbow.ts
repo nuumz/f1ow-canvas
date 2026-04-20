@@ -57,6 +57,25 @@ interface BBox {
 
 type BoxLike = Pick<BBox, 'x' | 'y' | 'width' | 'height'>;
 
+interface ElbowDirectionPreference {
+    primary: Direction;
+    alternate?: Direction;
+}
+
+interface ElbowDirectionPairCandidate {
+    startDir: Direction;
+    endDir: Direction;
+    preferencePenalty: number;
+}
+
+interface ScoredElbowRouteCandidate extends ElbowDirectionPairCandidate {
+    path: Point[];
+    bends: number;
+    length: number;
+    shortSegmentPenalty: number;
+    clearance: number;
+}
+
 // ─── Constants ────────────────────────────────────────────────
 
 /**
@@ -122,6 +141,8 @@ const BOUNDS_MARGIN = 40;
  * clean paths.
  */
 const BEND_PENALTY = 10_000;
+const AMBIGUOUS_AXIS_DELTA = 24;
+const AMBIGUOUS_RATIO = 1.5;
 
 // ─── Direction helpers ────────────────────────────────────────
 
@@ -138,6 +159,106 @@ function dirVec(dir: Direction): Point {
 /** Whether direction is along the vertical axis (up/down) */
 function isVerticalDir(dir: Direction): boolean {
     return dir === 'up' || dir === 'down';
+}
+
+function horizontalDir(dx: number): Direction {
+    return dx >= 0 ? 'right' : 'left';
+}
+
+function verticalDir(dy: number): Direction {
+    return dy >= 0 ? 'down' : 'up';
+}
+
+function alternateAxisDir(primary: Direction, dx: number, dy: number): Direction {
+    return isVerticalDir(primary) ? horizontalDir(dx) : verticalDir(dy);
+}
+
+function getElbowDirectionPreference(
+    shape: BoxLike,
+    targetPoint: Point,
+    targetShape?: BoxLike | null,
+    targetBinding?: Binding | null,
+): ElbowDirectionPreference {
+    const cx = shape.x + shape.width / 2;
+    const cy = shape.y + shape.height / 2;
+    const dx = targetPoint.x - cx;
+    const dy = targetPoint.y - cy;
+    const hDir = horizontalDir(dx);
+    const vDir = verticalDir(dy);
+
+    if (targetShape) {
+        const shapeRight = shape.x + shape.width;
+        const shapeBottom = shape.y + shape.height;
+        const targetRight = targetShape.x + targetShape.width;
+        const targetBottom = targetShape.y + targetShape.height;
+
+        const gapX = shapeRight < targetShape.x
+            ? targetShape.x - shapeRight
+            : targetRight < shape.x
+                ? shape.x - targetRight
+                : 0;
+        const gapY = shapeBottom < targetShape.y
+            ? targetShape.y - shapeBottom
+            : targetBottom < shape.y
+                ? shape.y - targetBottom
+                : 0;
+
+        const targetBindingHasAxis = Boolean(
+            targetBinding?.isPrecise &&
+            !(targetBinding.fixedPoint[0] === 0.5 && targetBinding.fixedPoint[1] === 0.5),
+        );
+        if (targetBindingHasAxis && gapX > 0 && gapY > 0) {
+            const targetDir = directionFromFixedPoint(targetBinding!.fixedPoint);
+            return targetDir === 'left' || targetDir === 'right'
+                ? { primary: hDir }
+                : { primary: vDir };
+        }
+
+        if (gapX > 0 && gapY === 0) {
+            return { primary: hDir };
+        }
+        if (gapY > 0 && gapX === 0) {
+            return { primary: vDir };
+        }
+        if (gapX > 0 && gapY > 0) {
+            const primary = gapX < gapY ? hDir : vDir;
+            const alternate = alternateAxisDir(primary, dx, dy);
+            return Math.abs(gapX - gapY) <= AMBIGUOUS_AXIS_DELTA
+                ? { primary, alternate }
+                : { primary };
+        }
+
+        const overlapX = Math.max(0, Math.min(shapeRight, targetRight) - Math.max(shape.x, targetShape.x));
+        const overlapY = Math.max(0, Math.min(shapeBottom, targetBottom) - Math.max(shape.y, targetShape.y));
+
+        if (overlapX > overlapY) {
+            return Math.abs(overlapX - overlapY) <= AMBIGUOUS_AXIS_DELTA
+                ? { primary: vDir, alternate: hDir }
+                : { primary: vDir };
+        }
+        if (overlapY > overlapX) {
+            return Math.abs(overlapY - overlapX) <= AMBIGUOUS_AXIS_DELTA
+                ? { primary: hDir, alternate: vDir }
+                : { primary: hDir };
+        }
+    }
+
+    const hw = (shape.width || 1) / 2;
+    const hh = (shape.height || 1) / 2;
+    const normDx = Math.abs(dx) / hw;
+    const normDy = Math.abs(dy) / hh;
+
+    if (normDx > normDy * 3) {
+        return { primary: hDir };
+    }
+    if (normDy > normDx * 3) {
+        return { primary: vDir };
+    }
+
+    const dominant = Math.max(normDx, normDy) / Math.max(1e-6, Math.min(normDx, normDy));
+    return dominant <= AMBIGUOUS_RATIO
+        ? { primary: vDir, alternate: hDir }
+        : { primary: vDir };
 }
 
 // ─── Direction detection (public API) ─────────────────────────
@@ -175,79 +296,7 @@ export function getElbowPreferredDirection(
     targetShape?: BoxLike | null,
     targetBinding?: Binding | null,
 ): Direction {
-    const cx = shape.x + shape.width / 2;
-    const cy = shape.y + shape.height / 2;
-    const dx = targetPoint.x - cx;
-    const dy = targetPoint.y - cy;
-
-    if (targetShape) {
-        const shapeRight = shape.x + shape.width;
-        const shapeBottom = shape.y + shape.height;
-        const targetRight = targetShape.x + targetShape.width;
-        const targetBottom = targetShape.y + targetShape.height;
-
-        const gapX = shapeRight < targetShape.x
-            ? targetShape.x - shapeRight
-            : targetRight < shape.x
-                ? shape.x - targetRight
-                : 0;
-        const gapY = shapeBottom < targetShape.y
-            ? targetShape.y - shapeBottom
-            : targetBottom < shape.y
-                ? shape.y - targetBottom
-                : 0;
-
-        const targetBindingHasAxis = Boolean(
-            targetBinding?.isPrecise &&
-            !(targetBinding.fixedPoint[0] === 0.5 && targetBinding.fixedPoint[1] === 0.5),
-        );
-        if (targetBindingHasAxis && gapX > 0 && gapY > 0) {
-            const targetDir = directionFromFixedPoint(targetBinding!.fixedPoint);
-            if (targetDir === 'left' || targetDir === 'right') {
-                return dx >= 0 ? 'right' : 'left';
-            }
-            return dy >= 0 ? 'down' : 'up';
-        }
-
-        if (gapX > 0 && gapY === 0) {
-            return dx >= 0 ? 'right' : 'left';
-        }
-        if (gapY > 0 && gapX === 0) {
-            return dy >= 0 ? 'down' : 'up';
-        }
-        if (gapX > 0 && gapY > 0) {
-            if (gapX < gapY) {
-                return dx >= 0 ? 'right' : 'left';
-            }
-            return dy >= 0 ? 'down' : 'up';
-        }
-
-        const overlapX = Math.max(0, Math.min(shapeRight, targetRight) - Math.max(shape.x, targetShape.x));
-        const overlapY = Math.max(0, Math.min(shapeBottom, targetBottom) - Math.max(shape.y, targetShape.y));
-
-        if (overlapX > overlapY) {
-            return dy >= 0 ? 'down' : 'up';
-        }
-        if (overlapY > overlapX) {
-            return dx >= 0 ? 'right' : 'left';
-        }
-    }
-
-    const hw = (shape.width || 1) / 2;
-    const hh = (shape.height || 1) / 2;
-    const normDx = Math.abs(dx) / hw;
-    const normDy = Math.abs(dy) / hh;
-
-    // Strongly horizontal: shapes are side-by-side → use side face
-    if (normDx > normDy * 3) {
-        return dx >= 0 ? 'right' : 'left';
-    }
-    // Strongly vertical: shapes are stacked → use top/bottom face
-    if (normDy > normDx * 3) {
-        return dy >= 0 ? 'down' : 'up';
-    }
-    // Diagonal / tie: prefer vertical exit for cleaner elbow aesthetics
-    return dy >= 0 ? 'down' : 'up';
+    return getElbowDirectionPreference(shape, targetPoint, targetShape, targetBinding).primary;
 }
 
 /**
@@ -917,6 +966,187 @@ function pickBestRoute(candidates: Point[][]): Point[] {
     return best;
 }
 
+function segmentLength(a: Point, b: Point): number {
+    return Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+}
+
+function interiorShortSegmentPenalty(path: Point[]): number {
+    if (path.length <= 3) return 0;
+    const threshold = MIN_STUB_LENGTH * 0.75;
+    let penalty = 0;
+    for (let i = 1; i < path.length - 2; i++) {
+        const len = segmentLength(path[i], path[i + 1]);
+        if (len < threshold) {
+            penalty += threshold - len;
+        }
+    }
+    return penalty;
+}
+
+function segmentRectClearance(a: Point, b: Point, rect: Rect): number {
+    if (a.x === b.x) {
+        const x = a.x;
+        const minY = Math.min(a.y, b.y);
+        const maxY = Math.max(a.y, b.y);
+        const dx = x < rect.left
+            ? rect.left - x
+            : x > rectRight(rect)
+                ? x - rectRight(rect)
+                : 0;
+        const dy = maxY < rect.top
+            ? rect.top - maxY
+            : minY > rectBottom(rect)
+                ? minY - rectBottom(rect)
+                : 0;
+        return Math.hypot(dx, dy);
+    }
+
+    const y = a.y;
+    const minX = Math.min(a.x, b.x);
+    const maxX = Math.max(a.x, b.x);
+    const dy = y < rect.top
+        ? rect.top - y
+        : y > rectBottom(rect)
+            ? y - rectBottom(rect)
+            : 0;
+    const dx = maxX < rect.left
+        ? rect.left - maxX
+        : minX > rectRight(rect)
+            ? minX - rectRight(rect)
+            : 0;
+    return Math.hypot(dx, dy);
+}
+
+function routeInteriorClearance(path: Point[], obstacles: Array<{ x: number; y: number; width: number; height: number }>): number {
+    if (path.length <= 3 || obstacles.length === 0) return Number.POSITIVE_INFINITY;
+    const rects = obstacles.map(bboxToRect);
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < path.length - 2; i++) {
+        for (const rect of rects) {
+            best = Math.min(best, segmentRectClearance(path[i], path[i + 1], rect));
+        }
+    }
+    return best;
+}
+
+function buildDirectionPairCandidates(
+    startPref: ElbowDirectionPreference,
+    endPref: ElbowDirectionPreference,
+): ElbowDirectionPairCandidate[] {
+    const startDirs = startPref.alternate ? [startPref.primary, startPref.alternate] : [startPref.primary];
+    const endDirs = endPref.alternate ? [endPref.primary, endPref.alternate] : [endPref.primary];
+    const unique = new Map<string, ElbowDirectionPairCandidate>();
+
+    for (let i = 0; i < startDirs.length; i++) {
+        for (let j = 0; j < endDirs.length; j++) {
+            const candidate: ElbowDirectionPairCandidate = {
+                startDir: startDirs[i],
+                endDir: endDirs[j],
+                preferencePenalty: i + j,
+            };
+            const key = `${candidate.startDir}|${candidate.endDir}`;
+            const existing = unique.get(key);
+            if (!existing || candidate.preferencePenalty < existing.preferencePenalty) {
+                unique.set(key, candidate);
+            }
+        }
+    }
+
+    return [...unique.values()].sort((a, b) => a.preferencePenalty - b.preferencePenalty);
+}
+
+function isBetterScoredElbowRoute(
+    candidate: ScoredElbowRouteCandidate,
+    current: ScoredElbowRouteCandidate,
+): boolean {
+    if (candidate.bends !== current.bends) {
+        return candidate.bends < current.bends;
+    }
+    if (Math.abs(candidate.shortSegmentPenalty - current.shortSegmentPenalty) > 0.5) {
+        return candidate.shortSegmentPenalty < current.shortSegmentPenalty;
+    }
+    if (Math.abs(candidate.clearance - current.clearance) > 1) {
+        return candidate.clearance > current.clearance;
+    }
+    if (Math.abs(candidate.length - current.length) > 0.5) {
+        return candidate.length < current.length;
+    }
+    return candidate.preferencePenalty < current.preferencePenalty;
+}
+
+export function selectElbowDirectionPair(args: {
+    startWorld: Point;
+    endWorld: Point;
+    startBinding: Binding | null;
+    endBinding: Binding | null;
+    startShape?: { x: number; y: number; width: number; height: number } | null;
+    endShape?: { x: number; y: number; width: number; height: number } | null;
+    intermediateObstacles?: Array<{ x: number; y: number; width: number; height: number }>;
+    minStubLength?: number;
+}): { startDir: Direction; endDir: Direction } {
+    const {
+        startWorld,
+        endWorld,
+        startBinding,
+        endBinding,
+        startShape,
+        endShape,
+        intermediateObstacles = [],
+        minStubLength,
+    } = args;
+
+    const isCenterBinding = (binding: Binding): boolean =>
+        !binding.isPrecise || (binding.fixedPoint[0] === 0.5 && binding.fixedPoint[1] === 0.5);
+
+    const startPref: ElbowDirectionPreference = startBinding && isCenterBinding(startBinding)
+        ? getElbowDirectionPreference(startShape ?? { x: startWorld.x, y: startWorld.y, width: 1, height: 1 }, endWorld, endShape, endBinding)
+        : { primary: startBinding ? directionFromFixedPoint(startBinding.fixedPoint) : directionFromPoints(startWorld, endWorld) };
+
+    const endPref: ElbowDirectionPreference = endBinding && isCenterBinding(endBinding)
+        ? getElbowDirectionPreference(endShape ?? { x: endWorld.x, y: endWorld.y, width: 1, height: 1 }, startWorld, startShape, startBinding)
+        : { primary: endBinding ? directionFromFixedPoint(endBinding.fixedPoint) : directionFromPoints(endWorld, startWorld) };
+
+    const candidates = buildDirectionPairCandidates(startPref, endPref);
+    if (candidates.length === 1) {
+        return { startDir: candidates[0].startDir, endDir: candidates[0].endDir };
+    }
+
+    const clearanceObstacles = [
+        ...(startShape ? [startShape] : []),
+        ...(endShape ? [endShape] : []),
+        ...intermediateObstacles,
+    ];
+
+    let best: ScoredElbowRouteCandidate | null = null;
+    for (const candidate of candidates) {
+        const path = computeElbowRoute(
+            startWorld,
+            endWorld,
+            candidate.startDir,
+            candidate.endDir,
+            startShape,
+            endShape,
+            minStubLength,
+            intermediateObstacles,
+        );
+        const scored: ScoredElbowRouteCandidate = {
+            ...candidate,
+            path,
+            bends: countBends(path),
+            length: totalPathLength(path),
+            shortSegmentPenalty: interiorShortSegmentPenalty(path),
+            clearance: routeInteriorClearance(path, clearanceObstacles),
+        };
+        if (!best || isBetterScoredElbowRoute(scored, best)) {
+            best = scored;
+        }
+    }
+
+    return best
+        ? { startDir: best.startDir, endDir: best.endDir }
+        : { startDir: startPref.primary, endDir: endPref.primary };
+}
+
 // ─── Core routing (grid-based) ────────────────────────────────
 
 /**
@@ -1277,6 +1507,35 @@ function fallbackRoute(
 /** Shape types that can act as obstacles for elbow routing */
 const OBSTACLE_TYPES = new Set(['rectangle', 'ellipse', 'diamond', 'text', 'image']);
 
+export function collectElbowIntermediateObstacles(
+    startWorld: Point,
+    endWorld: Point,
+    allElements: CanvasElement[],
+    excludeIds: Set<string>,
+): Array<{ x: number; y: number; width: number; height: number }> {
+    const obstacles: Array<{ x: number; y: number; width: number; height: number }> = [];
+
+    const routeMinX = Math.min(startWorld.x, endWorld.x) - BOUNDS_MARGIN * 3;
+    const routeMaxX = Math.max(startWorld.x, endWorld.x) + BOUNDS_MARGIN * 3;
+    const routeMinY = Math.min(startWorld.y, endWorld.y) - BOUNDS_MARGIN * 3;
+    const routeMaxY = Math.max(startWorld.y, endWorld.y) + BOUNDS_MARGIN * 3;
+
+    for (const el of allElements) {
+        if (!OBSTACLE_TYPES.has(el.type)) continue;
+        if (excludeIds.has(el.id)) continue;
+        if (!el.isVisible) continue;
+
+        const bbox = getShapeBBox(el);
+        if (bbox.x + bbox.width < routeMinX || bbox.x > routeMaxX ||
+            bbox.y + bbox.height < routeMinY || bbox.y > routeMaxY) {
+            continue;
+        }
+        obstacles.push(bbox);
+    }
+
+    return obstacles;
+}
+
 // ─── Route Cache ──────────────────────────────────────────────
 
 /**
@@ -1330,42 +1589,8 @@ export function computeElbowPoints(
 ): number[] {
     const elementMap = new Map(allElements.map(el => [el.id, el]));
 
-    // Center bindings have fixedPoint [0.5, 0.5] — directionFromFixedPoint
-    // is ambiguous there, so fall back to shape-geometry direction detection.
-    const isCenterBinding = (b: Binding): boolean =>
-        !b.isPrecise ||
-        (b.fixedPoint[0] === 0.5 && b.fixedPoint[1] === 0.5);
-
     const startEl = startBinding ? elementMap.get(startBinding.elementId) : undefined;
     const endEl = endBinding ? elementMap.get(endBinding.elementId) : undefined;
-
-    // ── Determine exit direction from start ──
-    let startDir: Direction;
-    if (startBinding) {
-        if (isCenterBinding(startBinding)) {
-            startDir = startEl
-                ? getElbowPreferredDirection(startEl, endWorld, endEl, endBinding)
-                : directionFromPoints(startWorld, endWorld);
-        } else {
-            startDir = directionFromFixedPoint(startBinding.fixedPoint);
-        }
-    } else {
-        startDir = directionFromPoints(startWorld, endWorld);
-    }
-
-    // ── Determine entry direction into end shape ──
-    let endDir: Direction;
-    if (endBinding) {
-        if (isCenterBinding(endBinding)) {
-            endDir = endEl
-                ? getElbowPreferredDirection(endEl, startWorld, startEl, startBinding)
-                : directionFromPoints(endWorld, startWorld);
-        } else {
-            endDir = directionFromFixedPoint(endBinding.fixedPoint);
-        }
-    } else {
-        endDir = directionFromPoints(endWorld, startWorld);
-    }
 
     // Get shape bounding boxes for endpoint avoidance
     const startBBox = startBinding ? elementMap.get(startBinding.elementId) ?? null : null;
@@ -1374,42 +1599,35 @@ export function computeElbowPoints(
     const endShapeBBox = endBBox ? getShapeBBox(endBBox) : null;
 
     // ── Collect intermediate obstacles ──
-    // ALL connectable shapes (except the two endpoint shapes) are obstacles.
-    // This prevents routes from cutting through shapes that sit between
-    // the start and end positions — matching standard canvas editor behavior.
     const startId = startBinding?.elementId;
     const endId = endBinding?.elementId;
-    const intermediateObstacles: BBox[] = [];
+    const excludeIds = new Set<string>();
+    if (startId) excludeIds.add(startId);
+    if (endId) excludeIds.add(endId);
+    const intermediateObstacles = collectElbowIntermediateObstacles(
+        startWorld,
+        endWorld,
+        allElements,
+        excludeIds,
+    );
+
+    const { startDir, endDir } = selectElbowDirectionPair({
+        startWorld,
+        endWorld,
+        startBinding,
+        endBinding,
+        startShape: startShapeBBox,
+        endShape: endShapeBBox,
+        intermediateObstacles,
+        minStubLength,
+    });
+
     // Build fingerprint for cache key (sorted for stability)
     const fpParts: string[] = [];
     const r = (v: number) => Math.round(v * 2) / 2;
 
-    for (const el of allElements) {
-        // Skip non-obstacle types (lines, arrows, freedraw)
-        if (!OBSTACLE_TYPES.has(el.type)) continue;
-        // Skip the two endpoint shapes (they get special inflation)
-        if (el.id === startId || el.id === endId) continue;
-        // Skip invisible elements
-        if (!el.isVisible) continue;
-
-        const bbox = getShapeBBox(el);
-
-        // Only include shapes that are near the routing area.
-        // Shapes far away from both start and end cannot affect the route
-        // and would only increase grid complexity.
-        const routeMinX = Math.min(startWorld.x, endWorld.x) - BOUNDS_MARGIN * 3;
-        const routeMaxX = Math.max(startWorld.x, endWorld.x) + BOUNDS_MARGIN * 3;
-        const routeMinY = Math.min(startWorld.y, endWorld.y) - BOUNDS_MARGIN * 3;
-        const routeMaxY = Math.max(startWorld.y, endWorld.y) + BOUNDS_MARGIN * 3;
-
-        // Check if shape bbox overlaps the expanded route area
-        if (bbox.x + bbox.width < routeMinX || bbox.x > routeMaxX ||
-            bbox.y + bbox.height < routeMinY || bbox.y > routeMaxY) {
-            continue; // Shape is too far away to matter
-        }
-
-        intermediateObstacles.push(bbox);
-        fpParts.push(`${el.id}:${r(bbox.x)},${r(bbox.y)},${r(bbox.width)},${r(bbox.height)}`);
+    for (const bbox of intermediateObstacles) {
+        fpParts.push(`${r(bbox.x)},${r(bbox.y)},${r(bbox.width)},${r(bbox.height)}`);
     }
 
     // ── Route cache lookup ──
