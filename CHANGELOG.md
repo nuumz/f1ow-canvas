@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-04-26
+
+### Changed
+
+- **Distribution hardening** — Library bundles are now minified with esbuild, source maps are no longer published, `console.*` and `debugger` statements are dropped, and legal/license comment blocks are stripped. Public API and types are unchanged.
+
+### Notes
+
+- Bundle size shrinks (≈ 30-40% gzip) and internal symbol names are no longer readable in shipped code. JavaScript shipped over npm cannot be made fully reverse-engineering proof; this release simply raises the bar.
+
+### Added
+
+- **Markdown text rendering** — Text elements render markdown (bold, italic, lists, links, inline/block code) with HTML overlay; double-click to edit inline and serialize back to markdown.
+- **Bound text on shapes** — Double-click a shape to attach a centered text label that follows the shape under move/resize/delete.
+- **Cross-layer double-click** — Double-clicking a text label routes to its container shape's edit affordance.
+- **Elbow routing improvements** — Obstacle-aware routing with alternate direction pairs and relaxed-margin fallback when the primary route is blocked.
+- **Center binding indicator** — Connection points expose a center anchor for shapes that prefer center-bound connectors.
+- **Animation hook** — `useFlowAnimation` exposes Konva-friendly RAF animation primitive.
+- **SVG export fallback** — Export gracefully degrades when worker-based SVG generation fails.
+
+### Changed
+
+- React peer dependency upgraded; types updated to match.
+- Worker URL resolution preserves relative paths so Next.js / non-Vite bundlers stay correct.
+- Vite/Vitest configuration: collaboration entry built separately; tests run under `happy-dom`.
+- Renderer instance-data management refactored for lower per-frame allocation.
+
+### Fixed
+
+- Connector label position when binding shifts mid-drag.
+- Text element z-order preserved across edit cycles.
+
+### Tests
+
+- Added test coverage for canvas store, export worker manager, AI canvas demo, agent bridge, text tool, text binding, markdown helpers, and editable target detection.
+
 ## [1.0.0] — 2026-02-27
 
 ### 🎉 First Public Release

@@ -107,10 +107,15 @@ export default defineConfig(({ mode }) => {
                 // second build (collaboration subpath). The first pass
                 // (main entry) starts with a clean dist directory.
                 emptyOutDir: isLib,
-                // Libraries should NOT be minified — consumers' bundlers handle
-                // minification. Un-minified output also prevents npm's security
-                // scanner from flagging readable code as "obfuscated".
-                minify: false,
+                // Minify with esbuild for shipped lib output:
+                // - Smaller payload
+                // - Strips identifiers, comments, and dead code (best-effort
+                //   obfuscation; npm's scanner accepts esbuild output).
+                // - Drops `console.*` and `debugger` so internal traces don't
+                //   leak into consumer apps.
+                minify: 'esbuild',
+                sourcemap: false,
+                target: 'es2020',
                 lib: isLib
                     ? {
                           entry: path.resolve(__dirname, 'src/lib/index.ts'),
@@ -153,6 +158,10 @@ export default defineConfig(({ mode }) => {
                         },
                     },
                 },
+            },
+            esbuild: {
+                drop: ['console', 'debugger'],
+                legalComments: 'none',
             },
         }),
     };

@@ -21,14 +21,15 @@
 ## ✨ Features
 
 - **9 Drawing Tools + Navigation** — Rectangle, Ellipse, Diamond, Line, Arrow, Free Draw, Text, Image, Eraser, plus Select and Hand tools.
-- **Smart Connectors** — Arrows and lines snap to shapes with auto-routing (sharp, curved, elbow).
+- **Smart Connectors** — Arrows and lines snap to shapes with auto-routing (sharp, curved, elbow with obstacle-aware fallback).
 - **11 Arrowhead Variants** — Triangle, circle, diamond, bar, crow's foot (ERD), and more.
 - **Selection & Transform** — Click, drag, resize, rotate, multi-select, group/ungroup, lock/unlock.
 - **Pan & Zoom** — Hand tool, scroll-wheel, trackpad pinch, zoom-to-fit, zoom-to-selection.
 - **Rich Styling** — Stroke, fill, width, dash, opacity, roughness, fonts.
+- **Markdown Text** — Text elements render markdown (bold, italic, lists, links, code) with inline editing via double-click.
 - **Customizable UI** — Floating toolbar (top/bottom/hidden), style panel, context menu.
 - **Undo / Redo** — 100-step diff-based history system.
-- **Export** — Export canvas to PNG, SVG, or JSON.
+- **Export** — Export canvas to PNG, SVG (with graceful fallback), or JSON.
 - **Real-Time Collaboration** — Optional CRDT via Yjs (experimental) with cursor presence.
 - **Plugin / Extension System** — Register custom element types with per-type validation and default values.
 - **Element Validation** — Every mutation path (add, update, import) is validated; invalid elements are rejected gracefully.
