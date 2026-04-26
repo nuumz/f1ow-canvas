@@ -20,14 +20,14 @@
 
 ## ✨ Features
 
-- **10 Drawing Tools** — Rectangle, Ellipse, Diamond, Line, Arrow, Free Draw, Text, Image, Eraser.
+- **9 Drawing Tools + Navigation** — Rectangle, Ellipse, Diamond, Line, Arrow, Free Draw, Text, Image, Eraser, plus Select and Hand tools.
 - **Smart Connectors** — Arrows and lines snap to shapes with auto-routing (sharp, curved, elbow).
 - **11 Arrowhead Variants** — Triangle, circle, diamond, bar, crow's foot (ERD), and more.
 - **Selection & Transform** — Click, drag, resize, rotate, multi-select, group/ungroup, lock/unlock.
 - **Pan & Zoom** — Hand tool, scroll-wheel, trackpad pinch, zoom-to-fit, zoom-to-selection.
 - **Rich Styling** — Stroke, fill, width, dash, opacity, roughness, fonts.
 - **Customizable UI** — Floating toolbar (top/bottom/hidden), style panel, context menu.
-- **Undo / Redo** — 100-step history snapshot system.
+- **Undo / Redo** — 100-step diff-based history system.
 - **Export** — Export canvas to PNG, SVG, or JSON.
 - **Real-Time Collaboration** — Optional CRDT via Yjs (experimental) with cursor presence.
 - **Plugin / Extension System** — Register custom element types with per-type validation and default values.
@@ -35,6 +35,10 @@
 - **Fully Themeable** — Dark mode, custom colors, all via props.
 - **Zero CSS Dependencies** — No external stylesheets required. Inline styled.
 - **TypeScript** — Full type safety with strict mode.
+
+> **Multi-instance support (preview):** `createCanvasStore()` and `<CanvasStoreProvider>` let React subscribers (`<FlowCanvas>`, toolbar, style panel, overlays) operate on independent stores. Tools, keyboard shortcuts, and the collaboration sync bridge still read from the singleton store via `getState()`, so full per-instance isolation across those subsystems is a follow-up phase. Until then, mounting multiple editable `<FlowCanvas>` instances on the same page is supported for layout/preview use cases but tool input and collaboration target the singleton.
+>
+> **Optional collaboration peers:** `yjs` and `y-websocket` are loaded via dynamic `import()` and ship in separate chunks. Apps that never enable collaboration do not need either package installed when consuming the ESM build. Lower-level CRDT APIs (`createCollaborationProvider`, `startSync`, `CollaborationManager`, codec helpers) live under the `f1ow/collaboration` subpath; the root `f1ow` entry only re-exports types, the `useCollaboration` hook (lazy), and `CursorOverlay`.
 
 ## 📦 Installation
 

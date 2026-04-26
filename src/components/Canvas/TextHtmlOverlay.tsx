@@ -15,7 +15,7 @@
  * @see utils/markdown.ts — markdown renderer + CSS injection
  */
 import React, { useRef, useEffect, useCallback, useMemo } from 'react';
-import { useCanvasStore } from '@/store/useCanvasStore';
+import { useCanvasStoreInstance } from '@/store/CanvasStoreContext';
 import { renderMarkdown, MD_CLASS, MD_STYLES } from '@/utils/markdown';
 import { serializeEditableHtmlToMarkdown } from '@/utils/markdownEditing';
 import { computeConnectorLabelPosition } from '@/utils/connection';
@@ -69,6 +69,7 @@ export const TextHtmlOverlay: React.FC<TextHtmlOverlayProps> = React.memo(({
     // Inject markdown CSS once
     useEffect(injectStyles, []);
 
+    const useCanvasStore = useCanvasStoreInstance();
     const elements = useCanvasStore(s => s.elements);
     const textElements = useMemo(
         () => elements.filter((el): el is TextElement => el.type === 'text'),

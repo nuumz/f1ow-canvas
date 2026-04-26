@@ -153,11 +153,21 @@ export class ExportWorkerManager {
                 };
             }
 
-            worker.postMessage({
-                type: 'exportSVG',
-                requestId,
-                elements,
-            });
+            try {
+                worker.postMessage({
+                    type: 'exportSVG',
+                    requestId,
+                    elements,
+                });
+            } catch (err) {
+                clearTimeout(timer);
+                this._pending.delete(requestId);
+                try {
+                    resolve(exportToSVG(elements));
+                } catch (fallbackErr) {
+                    reject(fallbackErr);
+                }
+            }
         });
     }
 

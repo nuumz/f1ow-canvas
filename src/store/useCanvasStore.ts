@@ -11,6 +11,7 @@ import type {
 } from '@/types';
 import { DEFAULT_STYLE } from '@/constants';
 import { clearBindingsForDeletedElements } from '@/utils/connection';
+import { syncAfterDrag } from '@/utils/dragSync';
 import { generateId } from '@/utils/id';
 import { elementRegistry } from '@/utils/elementRegistry';
 import { cloneAndRemapElements } from '@/utils/clone';
@@ -71,11 +72,18 @@ interface ElementDiff {
  */
 interface HistoryEntry {
     diffs: ElementDiff[];
+    /** Element order before this entry, used to restore z-order changes. */
+    beforeOrder?: string[];
+    /** Element order after this entry, used to redo z-order changes. */
+    afterOrder?: string[];
     /** Optional named mark/checkpoint for grouping */
     mark?: string;
     /** Timestamp for squash heuristics */
     timestamp: number;
 }
+
+type AlignMode = 'left' | 'centerH' | 'right' | 'top' | 'centerV' | 'bottom';
+type FlipAxis = 'horizontal' | 'vertical';
 
 // ─── Store State ──────────────────────────────────────────────
 interface CanvasState {
@@ -104,6 +112,8 @@ interface CanvasState {
     historyIndex: number;
     /** Baseline snapshot for computing diffs against current state */
     _historyBaseline: Map<string, CanvasElement>;
+    /** Baseline element order for z-order history. */
+    _historyOrderBaseline: string[];
     /** Whether history recording is temporarily paused */
     _historyPaused: boolean;
 
@@ -126,6 +136,11 @@ interface CanvasState {
     sendToBack: (ids: string[]) => void;
     bringForward: (ids: string[]) => void;
     sendBackward: (ids: string[]) => void;
+
+    // Transforms
+    alignElements: (ids: string[], mode: AlignMode) => void;
+    rotateElements: (ids: string[], deltaDegrees: number) => void;
+    flipElements: (ids: string[], axis: FlipAxis) => void;
 
     // Lock
     toggleLockElements: (ids: string[]) => void;
@@ -208,7 +223,124 @@ function cloneElement(el: CanvasElement): CanvasElement {
     return structuredClone(el);
 }
 
-export const useCanvasStore = create<CanvasState>((set, get) => ({
+function orderOf(elements: CanvasElement[]): string[] {
+    return elements.map((el) => el.id);
+}
+
+function sameOrder(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+function restoreOrder(elements: CanvasElement[], order: string[]): CanvasElement[] {
+    const byId = new Map(elements.map((el) => [el.id, el]));
+    const ordered: CanvasElement[] = [];
+    for (const id of order) {
+        const el = byId.get(id);
+        if (el) {
+            ordered.push(el);
+            byId.delete(id);
+        }
+    }
+    for (const el of elements) {
+        if (byId.has(el.id)) ordered.push(el);
+    }
+    return ordered;
+}
+
+function validSelectedIds(selectedIds: string[], elements: CanvasElement[]): string[] {
+    const existingIds = new Set(elements.map((el) => el.id));
+    return selectedIds.filter((id) => existingIds.has(id));
+}
+
+function selectedEditableElements(ids: string[], elements: CanvasElement[]): CanvasElement[] {
+    const idSet = new Set(ids);
+    return elements.filter((el) => idSet.has(el.id) && !el.isLocked);
+}
+
+function elementBounds(el: CanvasElement): { minX: number; minY: number; maxX: number; maxY: number } {
+    if ((el.type === 'line' || el.type === 'arrow' || el.type === 'freedraw') && el.points.length >= 2) {
+        let minLocalX = Infinity;
+        let minLocalY = Infinity;
+        let maxLocalX = -Infinity;
+        let maxLocalY = -Infinity;
+        for (let i = 0; i < el.points.length; i += 2) {
+            minLocalX = Math.min(minLocalX, el.points[i]);
+            minLocalY = Math.min(minLocalY, el.points[i + 1]);
+            maxLocalX = Math.max(maxLocalX, el.points[i]);
+            maxLocalY = Math.max(maxLocalY, el.points[i + 1]);
+        }
+        return {
+            minX: el.x + minLocalX,
+            minY: el.y + minLocalY,
+            maxX: el.x + maxLocalX,
+            maxY: el.y + maxLocalY,
+        };
+    }
+
+    return {
+        minX: el.x,
+        minY: el.y,
+        maxX: el.x + el.width,
+        maxY: el.y + el.height,
+    };
+}
+
+function boundsOf(elements: CanvasElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
+    if (elements.length === 0) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const el of elements) {
+        const bounds = elementBounds(el);
+        minX = Math.min(minX, bounds.minX);
+        minY = Math.min(minY, bounds.minY);
+        maxX = Math.max(maxX, bounds.maxX);
+        maxY = Math.max(maxY, bounds.maxY);
+    }
+    return { minX, minY, maxX, maxY };
+}
+
+function normalizeRotation(rotation: number): number {
+    return ((rotation % 360) + 360) % 360;
+}
+
+function flipPoints(points: number[] | undefined, min: number, max: number, axisOffset: 0 | 1): number[] | undefined {
+    if (!points) return undefined;
+    return points.map((value, index) => (index % 2 === axisOffset ? min + max - value : value));
+}
+
+/**
+ * Run `syncAfterDrag` against a store snapshot and apply any resulting
+ * binding/text-position updates via `batchUpdateElements`. Pulls state from
+ * the supplied `get()` so the helper works with any store instance produced
+ * by `createCanvasStore()` rather than the module-level singleton.
+ */
+function syncMovedElements(ids: Iterable<string>, get: () => CanvasState) {
+    const state = get();
+    const sync = syncAfterDrag(ids, state.elements);
+    if (sync.updates.length > 0) {
+        state.batchUpdateElements(sync.updates);
+    }
+}
+
+/**
+ * Factory: create a fresh canvas store instance.
+ *
+ * Each call returns an independent Zustand store with its own elements,
+ * selection, viewport, and history. Use this with `CanvasStoreProvider`
+ * to render multiple `<FlowCanvas>` instances side-by-side without state
+ * cross-talk on the React subscriber side.
+ *
+ * Note: the module-level `useCanvasStore` singleton remains exported for
+ * backward compatibility and is still used by tools, hooks, and the
+ * collaboration sync bridge that read state via `getState()`. Full
+ * multi-instance isolation across those subsystems is a follow-up phase.
+ */
+export type CanvasStore = ReturnType<typeof createCanvasStore>;
+
+export function createCanvasStore() {
+    return create<CanvasState>((set, get) => ({
     // ─── Initial State ────────────────────────────────────────
     elements: [],
     selectedIds: [],
@@ -223,6 +355,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     history: [],
     historyIndex: -1,
     _historyBaseline: new Map(),
+    _historyOrderBaseline: [],
     _historyPaused: false,
     showGrid: false,
 
@@ -364,7 +497,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         for (const el of valid) {
             baseline.set(el.id, el);
         }
-        set({ elements: valid, _historyBaseline: baseline });
+        set({ elements: valid, _historyBaseline: baseline, _historyOrderBaseline: orderOf(valid) });
     },
 
     duplicateElements: (ids) => {
@@ -454,6 +587,107 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             return { elements: elems };
         });
         get().pushHistory();
+    },
+
+    // ─── Transforms ──────────────────────────────────────────
+    alignElements: (ids, mode) => {
+        const movedIds: string[] = [];
+        set((state) => {
+            const targets = selectedEditableElements(ids, state.elements);
+            if (targets.length < 2) return state;
+            const bounds = boundsOf(targets);
+            if (!bounds) return state;
+            const centerX = (bounds.minX + bounds.maxX) / 2;
+            const centerY = (bounds.minY + bounds.maxY) / 2;
+            const targetIds = new Set(targets.map((el) => el.id));
+            const targetBounds = new Map(targets.map((el) => [el.id, elementBounds(el)]));
+            let changed = false;
+
+            const elements = state.elements.map((el) => {
+                if (!targetIds.has(el.id)) return el;
+                const elBounds = targetBounds.get(el.id);
+                if (!elBounds) return el;
+                let x = el.x;
+                let y = el.y;
+                if (mode === 'left') x += bounds.minX - elBounds.minX;
+                if (mode === 'centerH') x += centerX - (elBounds.minX + elBounds.maxX) / 2;
+                if (mode === 'right') x += bounds.maxX - elBounds.maxX;
+                if (mode === 'top') y += bounds.minY - elBounds.minY;
+                if (mode === 'centerV') y += centerY - (elBounds.minY + elBounds.maxY) / 2;
+                if (mode === 'bottom') y += bounds.maxY - elBounds.maxY;
+                if (x === el.x && y === el.y) return el;
+                changed = true;
+                movedIds.push(el.id);
+                return { ...el, x, y, version: (el.version ?? 0) + 1 } as CanvasElement;
+            });
+
+            return changed ? { elements } : state;
+        });
+        if (movedIds.length > 0) {
+            syncMovedElements(movedIds, get);
+            get().pushHistory();
+        }
+    },
+
+    rotateElements: (ids, deltaDegrees) => {
+        const movedIds: string[] = [];
+        set((state) => {
+            const idSet = new Set(ids);
+            let changed = false;
+            const elements = state.elements.map((el) => {
+                if (!idSet.has(el.id) || el.isLocked) return el;
+                const rotation = normalizeRotation((el.rotation ?? 0) + deltaDegrees);
+                if (rotation === el.rotation) return el;
+                changed = true;
+                movedIds.push(el.id);
+                return { ...el, rotation, version: (el.version ?? 0) + 1 } as CanvasElement;
+            });
+            return changed ? { elements } : state;
+        });
+        if (movedIds.length > 0) {
+            syncMovedElements(movedIds, get);
+            get().pushHistory();
+        }
+    },
+
+    flipElements: (ids, axis) => {
+        const movedIds: string[] = [];
+        set((state) => {
+            const targets = selectedEditableElements(ids, state.elements);
+            if (targets.length === 0) return state;
+            const bounds = boundsOf(targets);
+            if (!bounds) return state;
+            const targetIds = new Set(targets.map((el) => el.id));
+            const targetBounds = new Map(targets.map((el) => [el.id, elementBounds(el)]));
+            let changed = false;
+
+            const elements = state.elements.map((el) => {
+                if (!targetIds.has(el.id)) return el;
+                const elBounds = targetBounds.get(el.id);
+                if (!elBounds) return el;
+                const updates: Record<string, unknown> = {};
+                if (axis === 'horizontal') {
+                    updates.x = el.x + bounds.minX + bounds.maxX - elBounds.minX - elBounds.maxX;
+                    if (el.type === 'line' || el.type === 'arrow' || el.type === 'freedraw') {
+                        updates.points = flipPoints(el.points, elBounds.minX - el.x, elBounds.maxX - el.x, 0);
+                    }
+                } else {
+                    updates.y = el.y + bounds.minY + bounds.maxY - elBounds.minY - elBounds.maxY;
+                    if (el.type === 'line' || el.type === 'arrow' || el.type === 'freedraw') {
+                        updates.points = flipPoints(el.points, elBounds.minY - el.y, elBounds.maxY - el.y, 1);
+                    }
+                }
+                changed = true;
+                movedIds.push(el.id);
+                return { ...el, ...updates, version: (el.version ?? 0) + 1 } as CanvasElement;
+            });
+
+            return changed ? { elements } : state;
+        });
+        if (movedIds.length > 0) {
+            syncMovedElements(movedIds, get);
+            get().pushHistory();
+        }
     },
 
     // ─── Lock ─────────────────────────────────────────────────
@@ -635,7 +869,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     // ─── History (Diff-based) ───────────────────────────────────
     pushHistory: (mark?: string) => {
-        const { elements, _historyBaseline, _historyPaused } = get();
+        const { elements, _historyBaseline, _historyOrderBaseline, _historyPaused } = get();
         if (_historyPaused) return;
 
         // Compute diffs between baseline and current state
@@ -644,6 +878,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         for (const el of elements) {
             currentMap.set(el.id, el);
         }
+        const currentOrder = orderOf(elements);
+        const orderChanged = !sameOrder(_historyOrderBaseline, currentOrder);
 
         // Check for added and modified elements
         for (const el of elements) {
@@ -670,13 +906,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         }
 
         // Skip if nothing changed
-        if (diffs.length === 0) return;
+        if (diffs.length === 0 && !orderChanged) return;
 
         set((state) => {
             // Truncate any redone history
             const newHistory = state.history.slice(0, state.historyIndex + 1);
             newHistory.push({
                 diffs,
+                beforeOrder: orderChanged ? _historyOrderBaseline : undefined,
+                afterOrder: orderChanged ? currentOrder : undefined,
                 mark,
                 timestamp: Date.now(),
             });
@@ -688,6 +926,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 historyIndex: newHistory.length - 1,
                 // Update baseline to current state
                 _historyBaseline: new Map(currentMap),
+                _historyOrderBaseline: currentOrder,
             };
         });
     },
@@ -721,6 +960,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                         break;
                 }
             }
+            if (entry.beforeOrder) {
+                elements = restoreOrder(elements, entry.beforeOrder);
+            }
 
             // Update baseline to match the restored state
             const newBaseline = new Map<string, CanvasElement>();
@@ -731,8 +973,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             return {
                 historyIndex: historyIndex - 1,
                 elements,
-                selectedIds: [],
+                selectedIds: validSelectedIds(state.selectedIds, elements),
                 _historyBaseline: newBaseline,
+                _historyOrderBaseline: orderOf(elements),
             };
         });
     },
@@ -765,6 +1008,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                         break;
                 }
             }
+            if (entry.afterOrder) {
+                elements = restoreOrder(elements, entry.afterOrder);
+            }
 
             // Update baseline to match the restored state
             const newBaseline = new Map<string, CanvasElement>();
@@ -775,8 +1021,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             return {
                 historyIndex: newIndex,
                 elements,
-                selectedIds: [],
+                selectedIds: validSelectedIds(state.selectedIds, elements),
                 _historyBaseline: newBaseline,
+                _historyOrderBaseline: orderOf(elements),
             };
         });
     },
@@ -822,6 +1069,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
             const squashed: HistoryEntry = {
                 diffs: Array.from(netDiffs.values()),
+                beforeOrder: toSquash.find((entry) => entry.beforeOrder)?.beforeOrder,
+                afterOrder: [...toSquash].reverse().find((entry) => entry.afterOrder)?.afterOrder,
                 mark: toSquash[toSquash.length - 1].mark,
                 timestamp: Date.now(),
             };
@@ -845,3 +1094,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // ─── Grid ─────────────────────────────────────────────────
     toggleGrid: () => set((state) => ({ showGrid: !state.showGrid })),
 }));
+}
+
+/**
+ * Default singleton store. Used by tools, hooks, and the collaboration sync
+ * bridge that read state via `getState()`. Most apps render a single
+ * `<FlowCanvas>` per page, in which case this singleton is what the
+ * `CanvasStoreProvider` exposes.
+ */
+export const useCanvasStore = createCanvasStore();

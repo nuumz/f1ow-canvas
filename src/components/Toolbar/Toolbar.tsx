@@ -15,7 +15,7 @@ import {
     RotateCcw, RotateCw, FlipHorizontal, FlipVertical,
     Group, Ungroup, Lock, Unlock,
 } from 'lucide-react';
-import { useCanvasStore } from '../../store/useCanvasStore';
+import { useCanvasStoreInstance } from '../../store/CanvasStoreContext';
 import type { ToolType } from '../../types';
 import type { ToolConfig } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
@@ -383,6 +383,7 @@ const ZoomPicker: React.FC<{
 
 // ─── Main Toolbar ─────────────────────────────────────────────
 const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) => {
+    const useCanvasStore = useCanvasStoreInstance();
     const activeTool         = useCanvasStore((s) => s.activeTool);
     const setActiveTool      = useCanvasStore((s) => s.setActiveTool);
     const undo               = useCanvasStore((s) => s.undo);
@@ -395,9 +396,12 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) 
     const bringForward       = useCanvasStore((s) => s.bringForward);
     const sendBackward       = useCanvasStore((s) => s.sendBackward);
     const sendToBack         = useCanvasStore((s) => s.sendToBack);
+    const alignElements      = useCanvasStore((s) => s.alignElements);
+    const rotateElements     = useCanvasStore((s) => s.rotateElements);
+    const flipElements       = useCanvasStore((s) => s.flipElements);
     const toggleLockElements = useCanvasStore((s) => s.toggleLockElements);
     const ungroupElements    = useCanvasStore((s) => s.ungroupElements);
-    const pushHistory        = useCanvasStore((s) => s.pushHistory);
+    const setSelectedIds     = useCanvasStore((s) => s.setSelectedIds);
     const showGrid           = useCanvasStore((s) => s.showGrid);
     const toggleGrid         = useCanvasStore((s) => s.toggleGrid);
     const zoomIn             = useCanvasStore((s) => s.zoomIn);
@@ -427,30 +431,30 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) 
 
     const subTools: SubToolAction[] = [
         // Row 1 – Align H
-        { icon: <AlignLeft size={16} />,           label: 'Align Left',     disabled: !hasMultiSelection, onClick: () => {} },
-        { icon: <AlignCenter size={16} />,         label: 'Align Center H', disabled: !hasMultiSelection, onClick: () => {} },
-        { icon: <AlignRight size={16} />,          label: 'Align Right',    disabled: !hasMultiSelection, onClick: () => {} },
-        { icon: <AlignCenterVertical size={16} />, label: 'Align Center V', disabled: !hasMultiSelection, onClick: () => {} },
+        { icon: <AlignLeft size={16} />,           label: 'Align Left',     disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'left') },
+        { icon: <AlignCenter size={16} />,         label: 'Align Center H', disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'centerH') },
+        { icon: <AlignRight size={16} />,          label: 'Align Right',    disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'right') },
+        { icon: <AlignCenterVertical size={16} />, label: 'Align Center V', disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'centerV') },
         // Row 2 – Align V
-        { icon: <AlignStartVertical size={16} />,  label: 'Align Top',    disabled: !hasMultiSelection, onClick: () => {} },
-        { icon: <AlignEndVertical size={16} />,    label: 'Align Bottom', disabled: !hasMultiSelection, onClick: () => {} },
-        { icon: <FlipHorizontal size={16} />,      label: 'Flip H',       disabled: !hasSelection, onClick: () => {} },
-        { icon: <FlipVertical size={16} />,        label: 'Flip V',       disabled: !hasSelection, onClick: () => {} },
+        { icon: <AlignStartVertical size={16} />,  label: 'Align Top',    disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'top') },
+        { icon: <AlignEndVertical size={16} />,    label: 'Align Bottom', disabled: !hasMultiSelection, onClick: () => alignElements(selectedIds, 'bottom') },
+        { icon: <FlipHorizontal size={16} />,      label: 'Flip H',       disabled: !hasSelection, onClick: () => flipElements(selectedIds, 'horizontal') },
+        { icon: <FlipVertical size={16} />,        label: 'Flip V',       disabled: !hasSelection, onClick: () => flipElements(selectedIds, 'vertical') },
         // Row 3 – Layers
-        { icon: <ChevronsUp size={16} />,   label: 'Bring to Front', disabled: !hasSelection, onClick: () => { bringToFront(selectedIds); pushHistory(); } },
-        { icon: <ArrowUp size={16} />,      label: 'Bring Forward',  disabled: !hasSelection, onClick: () => { bringForward(selectedIds); pushHistory(); } },
-        { icon: <ArrowDown size={16} />,    label: 'Send Backward',  disabled: !hasSelection, onClick: () => { sendBackward(selectedIds); pushHistory(); } },
-        { icon: <ChevronsDown size={16} />, label: 'Send to Back',   disabled: !hasSelection, onClick: () => { sendToBack(selectedIds); pushHistory(); } },
+        { icon: <ChevronsUp size={16} />,   label: 'Bring to Front', disabled: !hasSelection, onClick: () => bringToFront(selectedIds) },
+        { icon: <ArrowUp size={16} />,      label: 'Bring Forward',  disabled: !hasSelection, onClick: () => bringForward(selectedIds) },
+        { icon: <ArrowDown size={16} />,    label: 'Send Backward',  disabled: !hasSelection, onClick: () => sendBackward(selectedIds) },
+        { icon: <ChevronsDown size={16} />, label: 'Send to Back',   disabled: !hasSelection, onClick: () => sendToBack(selectedIds) },
         // Row 4 – Transform
-        { icon: <RotateCcw size={16} />,                                               label: 'Rotate Left 90°',  disabled: !hasSelection, onClick: () => {} },
-        { icon: <RotateCw size={16} />,                                                label: 'Rotate Right 90°', disabled: !hasSelection, onClick: () => {} },
-        { icon: isLocked ? <Unlock size={16} /> : <Lock size={16} />,                 label: isLocked ? 'Unlock' : 'Lock', disabled: !hasSelection, onClick: () => { toggleLockElements(selectedIds); pushHistory(); } },
-        { icon: <Ungroup size={16} />,                                                 label: 'Ungroup',          disabled: !hasSelection, onClick: () => { ungroupElements(selectedIds); pushHistory(); } },
+        { icon: <RotateCcw size={16} />,                                               label: 'Rotate Left 90°',  disabled: !hasSelection, onClick: () => rotateElements(selectedIds, -90) },
+        { icon: <RotateCw size={16} />,                                                label: 'Rotate Right 90°', disabled: !hasSelection, onClick: () => rotateElements(selectedIds, 90) },
+        { icon: isLocked ? <Unlock size={16} /> : <Lock size={16} />,                 label: isLocked ? 'Unlock' : 'Lock', disabled: !hasSelection, onClick: () => toggleLockElements(selectedIds) },
+        { icon: <Ungroup size={16} />,                                                 label: 'Ungroup',          disabled: !hasSelection, onClick: () => ungroupElements(selectedIds) },
         // Row 5 – Canvas
         { icon: <Grid3x3 size={16} />,  label: showGrid ? 'Hide Grid' : 'Show Grid', disabled: false, onClick: toggleGrid },
         { icon: <Download size={16} />, label: 'Export JSON',                         disabled: false, onClick: handleExportJSON },
         { icon: <Maximize size={16} />, label: 'Reset Zoom',                          disabled: false, onClick: resetZoom },
-        { icon: <Group size={16} />,    label: 'Select All',                          disabled: false, onClick: () => {} },
+        { icon: <Group size={16} />,    label: 'Select All',                          disabled: elements.length === 0, onClick: () => setSelectedIds(elements.map((el) => el.id)) },
     ];
 
     // Shape picker: only available (implemented) tools, excluding tools already in main bar

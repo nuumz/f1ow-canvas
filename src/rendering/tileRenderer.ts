@@ -141,16 +141,32 @@ export type TileDrawFn = (
     tileWorldBounds: AABB,
 ) => void;
 
+/**
+ * Optional spatial query function. If provided, TileRenderer uses it to
+ * fetch only the elements overlapping a tile's AABB instead of scanning
+ * the full element array per tile. Recommended for canvases with many
+ * elements (drives per-tile rasterise cost from O(n) to O(log n) with
+ * an R-tree).
+ */
+export type TileSpatialQuery = (aabb: AABB) => CanvasElement[];
+
 export interface TileRendererOptions {
     /** Max tiles to cache (default 200) */
     maxCachedTiles?: number;
     /** Custom draw function; if not provided, a simple fallback is used */
     drawFn?: TileDrawFn;
+    /**
+     * Optional spatial query to avoid scanning all elements per tile.
+     * If omitted, falls back to a linear scan of the elements passed to
+     * `getTiles()`.
+     */
+    spatialQuery?: TileSpatialQuery;
 }
 
 export class TileRenderer {
     private _cache: TileCache;
     private _drawFn: TileDrawFn;
+    private _spatialQuery: TileSpatialQuery | null;
     /** Element-to-tile mapping for incremental invalidation */
     private _elementTiles = new Map<string, string[]>();
     /** Global generation counter — bumped on bulk changes */
@@ -159,6 +175,12 @@ export class TileRenderer {
     constructor(options: TileRendererOptions = {}) {
         this._cache = new TileCache(options.maxCachedTiles ?? 200);
         this._drawFn = options.drawFn ?? defaultDrawFn;
+        this._spatialQuery = options.spatialQuery ?? null;
+    }
+
+    /** Update the spatial query at runtime (e.g. when a new R-tree is built). */
+    setSpatialQuery(query: TileSpatialQuery | null): void {
+        this._spatialQuery = query;
     }
 
     // ── Public API ────────────────────────────────────────────
@@ -239,21 +261,28 @@ export class TileRenderer {
     private _rasterise(coord: TileCoord, allElements: CanvasElement[]): ImageBitmap {
         const bounds = tileBounds(coord);
         const wts = worldTileSize(coord.zoom);
+        const key = tileKey(coord);
 
-        // Find elements overlapping this tile
-        const tileElements: CanvasElement[] = [];
-        for (const el of allElements) {
-            const elAABB = getElementAABB(el);
-            if (aabbOverlap(elAABB, bounds)) {
-                tileElements.push(el);
-                // Track element → tile mapping for invalidation
-                const key = tileKey(coord);
-                const existing = this._elementTiles.get(el.id);
-                if (existing) {
-                    if (!existing.includes(key)) existing.push(key);
-                } else {
-                    this._elementTiles.set(el.id, [key]);
-                }
+        // Find elements overlapping this tile.
+        // Prefer the spatial query (O(log n) with R-tree) when available;
+        // otherwise fall back to the legacy linear scan.
+        let tileElements: CanvasElement[];
+        if (this._spatialQuery) {
+            tileElements = this._spatialQuery(bounds);
+        } else {
+            tileElements = [];
+            for (const el of allElements) {
+                const elAABB = getElementAABB(el);
+                if (aabbOverlap(elAABB, bounds)) tileElements.push(el);
+            }
+        }
+        // Track element → tile mapping for incremental invalidation.
+        for (const el of tileElements) {
+            const existing = this._elementTiles.get(el.id);
+            if (existing) {
+                if (!existing.includes(key)) existing.push(key);
+            } else {
+                this._elementTiles.set(el.id, [key]);
             }
         }
 

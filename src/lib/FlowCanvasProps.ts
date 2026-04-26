@@ -3,6 +3,7 @@ import type { ContextMenuItem } from '../components/ContextMenu/ContextMenu';
 import type { CollaborationConfig } from '../collaboration/types';
 import type { CustomElementConfig } from '../utils/elementRegistry';
 import type { RenderAnnotationFn } from '../components/Canvas/AnnotationsOverlay';
+import type { CanvasStore } from '../store/useCanvasStore';
 
 // Re-export ContextMenuItem for consumer convenience
 export type { ContextMenuItem };
@@ -154,6 +155,22 @@ export interface FlowCanvasProps {
      * Pass a `CollaborationConfig` to connect, or `undefined`/`null` to disable.
      */
     collaboration?: CollaborationConfig | null;
+
+    // ─── Store (multi-instance) ───────────────────────────────
+
+    /**
+     * Optional canvas store instance produced by `createCanvasStore()`.
+     * When supplied, this `<FlowCanvas>` and its descendant React
+     * subscribers (Toolbar, StylePanel, overlays) read state from this
+     * isolated store instead of the module-level singleton, allowing
+     * multiple canvases to coexist on the same page without cross-talk.
+     *
+     * Note: tools, keyboard shortcuts, and the collaboration sync bridge
+     * still read from the singleton via `getState()`. Until that wiring
+     * is migrated, those subsystems target the singleton even when this
+     * prop is supplied.
+     */
+    store?: CanvasStore;
     // ─── Plugin / Extension ───────────────────────────────────────────────
 
     /**

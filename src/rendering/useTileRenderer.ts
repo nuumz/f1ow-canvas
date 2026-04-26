@@ -14,7 +14,7 @@
  */
 import { useRef, useMemo, useCallback, useEffect } from 'react';
 import type { CanvasElement, ViewportState } from '@/types';
-import { TileRenderer, type TileDrawFn } from './tileRenderer';
+import { TileRenderer, type TileDrawFn, type TileSpatialQuery } from './tileRenderer';
 
 export interface UseTileRendererOptions {
     /** Enable/disable tile rendering. Default false. */
@@ -29,6 +29,12 @@ export interface UseTileRendererOptions {
      * Default 500.
      */
     elementThreshold?: number;
+    /**
+     * Optional spatial query (e.g. backed by an R-tree) for fetching
+     * elements overlapping a tile bounds. When provided, tile rasterise
+     * cost drops from O(n) to O(log n) per tile.
+     */
+    spatialQuery?: TileSpatialQuery;
 }
 
 export interface UseTileRendererReturn {
@@ -62,6 +68,7 @@ export function useTileRenderer(
         maxCachedTiles = 200,
         drawFn,
         elementThreshold = 500,
+        spatialQuery,
     } = options;
 
     // Create or recreate renderer when config changes
@@ -71,12 +78,21 @@ export function useTileRenderer(
         rendererRef.current = new TileRenderer({
             maxCachedTiles,
             drawFn,
+            spatialQuery,
         });
         return () => {
             rendererRef.current?.dispose();
             rendererRef.current = null;
         };
+        // We intentionally only recreate when factory inputs change; spatialQuery
+        // updates are forwarded via setSpatialQuery below.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [maxCachedTiles, drawFn]);
+
+    // Forward spatial query updates without recreating the renderer.
+    useEffect(() => {
+        rendererRef.current?.setSpatialQuery(spatialQuery ?? null);
+    }, [spatialQuery]);
 
     // Determine if tile rendering should be active
     const isActive = enabled && elements.length >= elementThreshold;

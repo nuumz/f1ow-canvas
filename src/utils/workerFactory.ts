@@ -98,8 +98,8 @@ export function createWorker(
             return new Worker(blobUrl);
         }
 
-        // Standard URL — use module type for ES module workers
-        return new Worker(raw instanceof URL ? raw : new URL(urlString), { type: 'module' });
+        // Standard URL — pass through URL objects, otherwise preserve relative paths.
+        return new Worker(raw instanceof URL ? raw : urlString, { type: 'module' });
     } catch (err) {
         console.warn('[workerFactory] Worker creation failed, using sync fallback:', err);
         return null;

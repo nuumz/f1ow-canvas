@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useMemo } from 'react';
 import { Transformer } from 'react-konva';
 import type Konva from 'konva';
-import { useCanvasStore } from '@/store/useCanvasStore';
+import { useCanvasStoreInstance } from '@/store/CanvasStoreContext';
 import type { CanvasElement } from '@/types';
 
 interface Props {
@@ -44,6 +44,7 @@ function selectionFingerprint(selectedIds: string[], elements: CanvasElement[]):
 
 const SelectionTransformer: React.FC<Props> = ({ selectedIds, selectionColor = '#4f8df7' }) => {
     const trRef = useRef<Konva.Transformer>(null);
+    const useCanvasStore = useCanvasStoreInstance();
 
     // Stable selector: derive a fingerprint from lock/type state only.
     // This prevents re-renders during drag (position changes don't

@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { PenLine, PenTool, Pencil as PencilIcon, Brush } from 'lucide-react';
-import { useCanvasStore } from '../../store/useCanvasStore';
+import { useCanvasStoreInstance } from '../../store/CanvasStoreContext';
 import { STROKE_COLORS, FILL_COLORS, FONT_SIZES, FONT_FAMILIES, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS, FREEHAND_STYLES } from '../../constants';
 import type { FlowCanvasTheme } from '../../lib/FlowCanvasProps';
 import type { ArrowElement, LineElement, ImageElement, ImageScaleMode, Arrowhead } from '../../types';
@@ -218,6 +218,7 @@ const ActionIcons = {
 // StylePanel Component
 // ═══════════════════════════════════════════════════════════════
 const StylePanel: React.FC<Props> = ({ theme }) => {
+    const useCanvasStore = useCanvasStoreInstance();
     // Granular selectors for better performance
     const currentStyle = useCanvasStore((s) => s.currentStyle);
     const setCurrentStyle = useCanvasStore((s) => s.setCurrentStyle);

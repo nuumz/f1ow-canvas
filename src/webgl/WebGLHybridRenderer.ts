@@ -55,6 +55,8 @@ export interface WebGLHybridRendererOptions {
  * Total: 10 floats per instance
  */
 const FLOATS_PER_INSTANCE = 10;
+const INSTANCE_DATA_SHRINK_RATIO = 0.5;
+const INSTANCE_DATA_MIN_CAPACITY = FLOATS_PER_INSTANCE * 256;
 
 // ─── WebGLHybridRenderer ──────────────────────────────────────
 
@@ -316,8 +318,11 @@ export class WebGLHybridRenderer {
     private _buildInstanceData(elements: CanvasElement[]): void {
         const count = elements.length;
         const needed = count * FLOATS_PER_INSTANCE;
-        if (this._instanceData.length < needed) {
-            this._instanceData = new Float32Array(needed);
+        if (
+            this._instanceData.length < needed ||
+            (this._instanceData.length > INSTANCE_DATA_MIN_CAPACITY && needed < this._instanceData.length * INSTANCE_DATA_SHRINK_RATIO)
+        ) {
+            this._instanceData = new Float32Array(Math.max(needed, INSTANCE_DATA_MIN_CAPACITY));
         }
 
         let offset = 0;

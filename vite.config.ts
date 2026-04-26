@@ -65,13 +65,32 @@ function stripImportMetaUrlFromDataUrls(): import('vite').Plugin {
 
 export default defineConfig(({ mode }) => {
     const isLib = mode === 'lib';
+    const isLibCollab = mode === 'lib-collab';
+    const isLibBuild = isLib || isLibCollab;
 
     return {
         plugins: [
             react(),
-            ...(isLib
+            ...(isLibBuild
                 ? [
-                      dts({ include: ['src/lib', 'src/types', 'src/constants', 'src/utils', 'src/store', 'src/components', 'src/hooks', 'src/workers'] }),
+                      // Declaration files only need to be emitted once;
+                      // emit during the main `lib` pass.
+                      ...(isLib
+                          ? [
+                                dts({
+                                    include: [
+                                        'src/lib',
+                                        'src/types',
+                                        'src/constants',
+                                        'src/utils',
+                                        'src/store',
+                                        'src/components',
+                                        'src/hooks',
+                                        'src/workers',
+                                    ],
+                                }),
+                            ]
+                          : []),
                       stubWorkerUrlsInLibBuild(),
                       stripImportMetaUrlFromDataUrls(),
                   ]
@@ -82,18 +101,29 @@ export default defineConfig(({ mode }) => {
                 '@': path.resolve(__dirname, './src'),
             },
         },
-        ...(isLib && {
+        ...(isLibBuild && {
             build: {
+                // Don't wipe the previous pass's output when running the
+                // second build (collaboration subpath). The first pass
+                // (main entry) starts with a clean dist directory.
+                emptyOutDir: isLib,
                 // Libraries should NOT be minified — consumers' bundlers handle
                 // minification. Un-minified output also prevents npm's security
                 // scanner from flagging readable code as "obfuscated".
                 minify: false,
-                lib: {
-                    entry: path.resolve(__dirname, 'src/lib/index.ts'),
-                    name: 'FlowCanvas',
-                    formats: ['es', 'umd'] as const,
-                    fileName: (format) => `f1ow.${format === 'es' ? 'js' : 'umd.cjs'}`,
-                },
+                lib: isLib
+                    ? {
+                          entry: path.resolve(__dirname, 'src/lib/index.ts'),
+                          name: 'FlowCanvas',
+                          formats: ['es', 'umd'] as const,
+                          fileName: (format) => `f1ow.${format === 'es' ? 'js' : 'umd.cjs'}`,
+                      }
+                    : {
+                          entry: path.resolve(__dirname, 'src/lib/collaboration.ts'),
+                          name: 'FlowCanvasCollaboration',
+                          formats: ['es'] as const,
+                          fileName: () => 'f1ow-collaboration.js',
+                      },
                 rollupOptions: {
                     // Packages that consumers must provide (peerDependencies).
                     // nanoid, rbush, lucide-react are bundled — no install required by consumers.

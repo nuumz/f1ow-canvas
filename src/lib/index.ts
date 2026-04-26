@@ -59,7 +59,10 @@ export type {
 } from '../types';
 
 // Store hook (for advanced usage)
-export { useCanvasStore } from '../store/useCanvasStore';
+export { useCanvasStore, createCanvasStore } from '../store/useCanvasStore';
+export type { CanvasStore } from '../store/useCanvasStore';
+export { CanvasStoreProvider, useCanvasStoreInstance } from '../store/CanvasStoreContext';
+export type { CanvasStoreProviderProps } from '../store/CanvasStoreContext';
 
 // Constants
 export { DEFAULT_STYLE, STROKE_COLORS, FILL_COLORS, STROKE_WIDTHS, TOOLS, ARROWHEAD_TYPES, LINE_TYPES, ROUGHNESS_CONFIGS } from '../constants';
@@ -215,8 +218,16 @@ export {
 export type { OperationEntry } from '../utils/crdtPrep';
 
 // ─── Phase 4: CRDT Real-Time Collaboration (Yjs) ─────────────
+//
+// Only types and the lazy React hook are re-exported from the root entry,
+// so importing `from 'f1ow'` does NOT pull `yjs` / `y-websocket` into the
+// static import graph. Apps that use the lower-level Yjs APIs
+// (`createCollaborationProvider`, `startSync`, `CollaborationManager`,
+// codec helpers, etc.) must import them from the dedicated subpath:
+//
+//     import { createCollaborationProvider } from 'f1ow/collaboration';
 
-// Collaboration types
+// Collaboration types (zero runtime cost)
 export type {
     CollaborationUser,
     AwarenessState,
@@ -225,37 +236,12 @@ export type {
     CollaborationEvent,
 } from '../collaboration/types';
 
-// Collaboration provider management (legacy singleton API)
-export {
-    createCollaborationProvider,
-    destroyCollaborationProvider,
-    getYDoc,
-    getYProvider,
-    getYElements,
-    isCollaborationActive,
-    onStatusChange,
-    updateAwareness,
-    getRemoteAwareness,
-} from '../collaboration/yjsProvider';
-
-// Sync bridge (legacy singleton API)
-export { startSync, stopSync } from '../collaboration/syncBridge';
-
-// Sync codec (shared serialization for Yjs ↔ CanvasElement)
-export { elementToYMap, yMapToElement, SYNC_FIELDS, STYLE_FIELDS } from '../collaboration/syncBridgeCodec';
-
-// Instance-based collaboration manager (supports multiple FlowCanvas instances)
-export { CollaborationManager } from '../collaboration/CollaborationManager';
-
-// Web Worker-based sync adapter (offloads CRDT to worker thread)
-export { SyncWorkerAdapter } from '../collaboration/syncWorker';
-export type { WorkerInMessage, WorkerOutMessage, SyncWorkerCallbacks } from '../collaboration/syncWorker';
-
-// React hook
+// React hook — internally lazy-loads `yjs` / `y-websocket` at activation,
+// so this re-export does not pull those packages into the static graph.
 export { useCollaboration } from '../collaboration/useCollaboration';
 export type { UseCollaborationReturn } from '../collaboration/useCollaboration';
 
-// Cursor overlay component
+// Cursor overlay component (Konva-only, no yjs dependency).
 export { default as CursorOverlay } from '../collaboration/CursorOverlay';
 
 // ─── Phase 4: Tile-Based Rendering ───────────────────────────
@@ -274,7 +260,7 @@ export {
     tileBounds,
     getElementTiles,
 } from '../rendering/tileRenderer';
-export type { TileDrawFn, TileRendererOptions } from '../rendering/tileRenderer';
+export type { TileDrawFn, TileRendererOptions, TileSpatialQuery } from '../rendering/tileRenderer';
 
 // Tile renderer hook
 export { useTileRenderer } from '../rendering/useTileRenderer';

@@ -10,7 +10,7 @@ export default defineConfig({
     },
     test: {
         globals: true,
-        environment: 'node',
+        environment: 'happy-dom',
         include: ['tests/**/*.test.ts'],
         coverage: {
             provider: 'v8',

@@ -16,7 +16,8 @@ import Konva from 'konva';
 // in hot paths (drawing, drag). Safe for a well-tested production app.
 Konva.showWarnings = false;
 
-import { useCanvasStore } from '../store/useCanvasStore';
+import { useCanvasStore as _defaultCanvasStore } from '../store/useCanvasStore';
+import { CanvasStoreProvider, useCanvasStoreInstance } from '../store/CanvasStoreContext';
 import { useLinearEditStore } from '../store/useLinearEditStore';
 import type {
     CanvasElement as CanvasElementType,
@@ -351,7 +352,16 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         collaboration: collaborationConfig,
         workerConfig,
         customElementTypes,
+        store: storeProp,
     } = props;
+
+    // ─── Store instance (multi-instance support) ─────────────
+    // When a `store` prop is supplied via `createCanvasStore()`, this
+    // FlowCanvas reads/writes through that isolated instance and provides
+    // it to descendant React subscribers via context. Without the prop,
+    // we fall back to the module-level singleton so existing single-
+    // instance apps work unchanged.
+    const useCanvasStore = storeProp ?? _defaultCanvasStore;
 
     const theme = { ...DEFAULT_THEME, ...themeProp };
 
@@ -530,15 +540,20 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         if (changedConnectorIds.size > 0 && result) {
             // Build O(1) lookup from the patched result array
             const patchMap = new Map<string, CanvasElementType>();
-            for (const el of result) patchMap.set(el.id, el);
+            const indexMap = new Map<string, number>();
+            for (let i = 0; i < result.length; i++) {
+                const el = result[i];
+                patchMap.set(el.id, el);
+                indexMap.set(el.id, i);
+            }
 
             for (const connId of changedConnectorIds) {
                 const conn = patchMap.get(connId) as (LineElement | ArrowElement) | undefined;
                 if (!conn?.boundElements) continue;
                 for (const be of conn.boundElements) {
                     if (be.type !== 'text') continue;
-                    const txtIdx = result.findIndex(e => e.id === be.id);
-                    if (txtIdx === -1) continue;
+                    const txtIdx = indexMap.get(be.id);
+                    if (txtIdx === undefined) continue;
                     const txt = result[txtIdx] as TextElement;
                     const textW = Math.max(10, txt.width || 60);
                     const textH = txt.height || 30;
@@ -2259,6 +2274,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
     // ─── Render ───────────────────────────────────────────────
     return (
+        <CanvasStoreProvider store={useCanvasStore}>
         <WorkerConfigContext.Provider value={workerConfigValue}>
             <div
                 ref={containerRef}
@@ -2532,6 +2548,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             {showStatusBar && <StatusBar theme={theme} />}
         </div>
         </WorkerConfigContext.Provider>
+        </CanvasStoreProvider>
     );
 });
 
@@ -2541,6 +2558,7 @@ FlowCanvas.displayName = 'FlowCanvas';
 // Uses granular Zustand selectors so it only re-renders when its
 // specific data changes — not on every element update.
 const StatusBar: React.FC<{ theme: typeof DEFAULT_THEME }> = React.memo(({ theme }) => {
+    const useCanvasStore = useCanvasStoreInstance();
     // Count only "logical" elements — bound text (containerId != null) is
     // part of its parent shape, not a separate user-visible element.
     const elementCount = useCanvasStore((s) =>
