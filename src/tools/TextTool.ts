@@ -36,7 +36,7 @@ export const textTool: ToolHandler = {
             const existingTextBinding = container.boundElements?.find((be) => be.type === 'text');
             if (existingTextBinding) {
                 ctx.setSelectedIds([existingTextBinding.id, container.id]);
-                ctx.setActiveTool('select');
+                ctx.commitTool();
                 ctx.setIsDrawing(false);
                 ctx.setDrawStart(null);
                 ctx.setAutoEditTextId(existingTextBinding.id);
@@ -51,7 +51,7 @@ export const textTool: ToolHandler = {
                 boundElements: [...(container.boundElements ?? []), { id, type: 'text' }],
             });
             ctx.setSelectedIds([id, container.id]);
-            ctx.setActiveTool('select');
+            ctx.commitTool();
             ctx.setIsDrawing(false);
             ctx.setDrawStart(null);
             ctx.setAutoEditTextId(id);
@@ -80,7 +80,7 @@ export const textTool: ToolHandler = {
         ctx.addElement(el);
         ctx.onElementCreate?.(el);
         ctx.setSelectedIds([id]);
-        ctx.setActiveTool('select');
+        ctx.commitTool();
         ctx.setIsDrawing(false);
         ctx.setDrawStart(null);
         // Auto-open text editor immediately

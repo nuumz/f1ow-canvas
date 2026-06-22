@@ -93,6 +93,8 @@ interface CanvasState {
 
     // Tool
     activeTool: ToolType;
+    /** Excalidraw-style "keep selected tool active after drawing" (Q). */
+    toolLocked: boolean;
     currentStyle: ElementStyle;
 
     // Linear tool defaults (arrow/line)
@@ -155,6 +157,11 @@ interface CanvasState {
 
     // Tool
     setActiveTool: (tool: ToolType) => void;
+    /** Toggle tool-lock (keep tool active after drawing). */
+    toggleToolLock: () => void;
+    /** Called by drawing tools on commit: revert to 'select' unless tool-lock is on.
+     *  Does NOT touch selectedIds, so the just-created element stays selected. */
+    commitTool: () => void;
     setCurrentStyle: (style: Partial<ElementStyle>) => void;
     setCurrentLineType: (lineType: LineType) => void;
     setCurrentStartArrowhead: (arrowhead: Arrowhead | null) => void;
@@ -345,6 +352,7 @@ export function createCanvasStore() {
     elements: [],
     selectedIds: [],
     activeTool: 'select',
+    toolLocked: false,
     currentStyle: { ...DEFAULT_STYLE },
     currentLineType: 'sharp' as LineType,
     currentStartArrowhead: null,
@@ -764,6 +772,15 @@ export function createCanvasStore() {
         activeTool: tool,
         // Keep selection when switching back to 'select' (e.g. after creating an element)
         selectedIds: tool === 'select' ? state.selectedIds : [],
+    })),
+
+    toggleToolLock: () => set((state) => ({ toolLocked: !state.toolLocked })),
+
+    // Drawing tools call this on commit instead of hardcoding setActiveTool('select'),
+    // so tool-lock can keep the tool active. selectedIds is left untouched so the
+    // just-created element (set by the tool's onMouseUp) stays selected.
+    commitTool: () => set((state) => ({
+        activeTool: state.toolLocked ? state.activeTool : 'select',
     })),
 
     setCurrentStyle: (style) =>

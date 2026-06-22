@@ -63,7 +63,7 @@ export const drawShapeTool: ToolHandler = {
         ctx.setIsDrawing(false);
         ctx.setDrawStart(null);
         ctx.currentElementIdRef.current = null;
-        ctx.setActiveTool('select');
+        ctx.commitTool();
     },
 
     getCursor() {

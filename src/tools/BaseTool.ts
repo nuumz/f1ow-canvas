@@ -37,6 +37,8 @@ export interface ToolContext {
     setSelectedIds: (ids: string[]) => void;
     clearSelection: () => void;
     setActiveTool: (tool: ToolType) => void;
+    /** Revert to 'select' after a draw is committed, honoring tool-lock. */
+    commitTool: () => void;
     setIsDrawing: (b: boolean) => void;
     setDrawStart: (p: Point | null) => void;
     pushHistory: (mark?: string) => void;

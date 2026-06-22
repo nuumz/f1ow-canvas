@@ -47,6 +47,7 @@ function createContext(elements: CanvasElement[]) {
         setSelectedIds: vi.fn(),
         clearSelection: vi.fn(),
         setActiveTool: vi.fn(),
+        commitTool: vi.fn(),
         setIsDrawing: vi.fn(),
         setDrawStart: vi.fn(),
         pushHistory: vi.fn(),

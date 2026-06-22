@@ -1,11 +1,11 @@
 import React, { useEffect, useCallback } from 'react';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { useLinearEditStore } from '@/store/useLinearEditStore';
-import type { ToolType, LineElement, ArrowElement } from '@/types';
+import type { LineElement, ArrowElement } from '@/types';
 import { setClipboard } from '@/utils/clipboard';
 import { gatherElementsForCopy } from '@/utils/clone';
 import { isTextEditingTarget } from '@/utils/editable';
-import { GRID_SIZE } from '@/constants';
+import { GRID_SIZE, KEY_TO_TOOL } from '@/constants';
 
 /**
  * Keyboard shortcuts handler — canvas-standard hotkeys
@@ -52,22 +52,17 @@ export function useKeyboardShortcuts(
             const store = useCanvasStore.getState();
             const linearEdit = useLinearEditStore.getState();
 
-            // ─── Tool Shortcuts ──────────────────────────────────
-            if (!isCmd && !e.shiftKey) {
-                const toolMap: Record<string, ToolType> = {
-                    v: 'select',
-                    h: 'hand',
-                    r: 'rectangle',
-                    o: 'ellipse',
-                    d: 'diamond',
-                    l: 'line',
-                    a: 'arrow',
-                    p: 'freedraw',
-                    t: 'text',
-                    i: 'image',
-                    e: 'eraser',
-                };
-                const tool = toolMap[e.key.toLowerCase()];
+            // ─── Tool Shortcuts (letters + numbers, Excalidraw-style) ──
+            // Guards: ignore auto-repeat (would spam the tool-lock toggle) and
+            // never switch tools mid-draw.
+            if (!isCmd && !e.shiftKey && !e.repeat && !store.isDrawing) {
+                // Tool-lock toggle — "keep selected tool active after drawing"
+                if (e.key.toLowerCase() === 'q') {
+                    e.preventDefault();
+                    store.toggleToolLock();
+                    return;
+                }
+                const tool = KEY_TO_TOOL[e.key.toLowerCase()];
                 if (tool) {
                     e.preventDefault();
                     store.setActiveTool(tool);

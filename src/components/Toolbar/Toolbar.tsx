@@ -386,6 +386,8 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) 
     const useCanvasStore = useCanvasStoreInstance();
     const activeTool         = useCanvasStore((s) => s.activeTool);
     const setActiveTool      = useCanvasStore((s) => s.setActiveTool);
+    const toolLocked         = useCanvasStore((s) => s.toolLocked);
+    const toggleToolLock     = useCanvasStore((s) => s.toggleToolLock);
     const undo               = useCanvasStore((s) => s.undo);
     const redo               = useCanvasStore((s) => s.redo);
     const selectedIds        = useCanvasStore((s) => s.selectedIds);
@@ -553,14 +555,43 @@ const Toolbar: React.FC<Props> = ({ visibleTools, theme, position = 'bottom' }) 
                 ? { borderRadius: '12px 12px 0 0', borderBottom: 'none' }
                 : {}
             ) }}>
+                {/* Tool-lock toggle (Excalidraw: keep tool active after drawing) */}
+                <button
+                    style={mkBtnStyle(toolLocked, theme)}
+                    onClick={toggleToolLock}
+                    title="Keep selected tool active after drawing (Q)"
+                >
+                    {toolLocked ? <Lock size={18} /> : <Unlock size={18} />}
+                </button>
+                <div style={mkSepStyle(theme)} />
                 {visibleTools.map((tool) => (
                     <button
                         key={tool.type}
-                        style={mkBtnStyle(activeTool === tool.type, theme)}
+                        style={{ ...mkBtnStyle(activeTool === tool.type, theme), position: 'relative' }}
                         onClick={() => setActiveTool(tool.type as ToolType)}
-                        title={`${tool.label} (${tool.shortcut})`}
+                        title={`${tool.label} — ${tool.shortcut}${tool.num !== undefined ? ` / ${tool.num}` : ''}`}
                     >
                         {ICON_MAP[tool.icon]}
+                        {tool.num !== undefined && (
+                            <span
+                                style={{
+                                    position: 'absolute', right: 3, bottom: 1,
+                                    fontSize: 9, lineHeight: 1, fontWeight: 600,
+                                    opacity: 0.5, pointerEvents: 'none', userSelect: 'none',
+                                }}
+                            >
+                                {tool.num}
+                            </span>
+                        )}
+                        {toolLocked && activeTool === tool.type && (
+                            <Lock
+                                size={9}
+                                style={{
+                                    position: 'absolute', right: 2, top: 2,
+                                    opacity: 0.75, pointerEvents: 'none',
+                                }}
+                            />
+                        )}
                     </button>
                 ))}
                 <div style={mkSepStyle(theme)} />

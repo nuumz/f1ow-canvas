@@ -49,23 +49,41 @@ export const STROKE_WIDTHS = [1, 2, 3, 4, 6];
 export interface ToolConfig {
     type: ToolType;
     label: string;
-    shortcut: string;
+    shortcut: string;   // display string for tooltip, e.g. "R"
+    /** Letter hotkey (lowercase). */
+    key?: string;
+    /** Excalidraw-style number key + toolbar badge (0–9). undefined = no number. */
+    num?: number;
     icon: string; // lucide icon name
 }
 
+// Order = toolbar layout. Numbers ascend left-to-right (Excalidraw convention);
+// `hand` stays leftmost and has no number.
 export const TOOLS: ToolConfig[] = [
-    { type: 'hand', label: 'Hand (Pan)', shortcut: 'H', icon: 'Hand' },
-    { type: 'select', label: 'Select', shortcut: 'V', icon: 'MousePointer2' },
-    { type: 'rectangle', label: 'Rectangle', shortcut: 'R', icon: 'Square' },
-    { type: 'ellipse', label: 'Ellipse', shortcut: 'O', icon: 'Circle' },
-    { type: 'diamond', label: 'Diamond', shortcut: 'D', icon: 'Diamond' },
-    { type: 'line', label: 'Line', shortcut: 'L', icon: 'Minus' },
-    { type: 'arrow', label: 'Arrow', shortcut: 'A', icon: 'ArrowUpRight' },
-    { type: 'freedraw', label: 'Pencil', shortcut: 'P', icon: 'Pencil' },
-    { type: 'text', label: 'Text', shortcut: 'T', icon: 'Type' },
-    { type: 'image', label: 'Image', shortcut: 'I', icon: 'ImageIcon' },
-    { type: 'eraser', label: 'Eraser', shortcut: 'E', icon: 'Eraser' },
+    { type: 'hand',      label: 'Hand (Pan)', key: 'h',         shortcut: 'H', icon: 'Hand' },
+    { type: 'select',    label: 'Select',     key: 'v', num: 1, shortcut: 'V', icon: 'MousePointer2' },
+    { type: 'rectangle', label: 'Rectangle',  key: 'r', num: 2, shortcut: 'R', icon: 'Square' },
+    { type: 'diamond',   label: 'Diamond',    key: 'd', num: 3, shortcut: 'D', icon: 'Diamond' },
+    { type: 'ellipse',   label: 'Ellipse',    key: 'o', num: 4, shortcut: 'O', icon: 'Circle' },
+    { type: 'arrow',     label: 'Arrow',      key: 'a', num: 5, shortcut: 'A', icon: 'ArrowUpRight' },
+    { type: 'line',      label: 'Line',       key: 'l', num: 6, shortcut: 'L', icon: 'Minus' },
+    { type: 'freedraw',  label: 'Pencil',     key: 'p', num: 7, shortcut: 'P', icon: 'Pencil' },
+    { type: 'text',      label: 'Text',       key: 't', num: 8, shortcut: 'T', icon: 'Type' },
+    { type: 'image',     label: 'Image',      key: 'i', num: 9, shortcut: 'I', icon: 'ImageIcon' },
+    { type: 'eraser',    label: 'Eraser',     key: 'e', num: 0, shortcut: 'E', icon: 'Eraser' },
 ];
+
+/**
+ * Derived key→tool lookup — the single map the keyboard handler uses.
+ * Built once from TOOLS so letter/number shortcuts can never drift from the
+ * toolbar definition. Both the letter (`key`) and the number (`num`) resolve
+ * to the same tool (e.g. `r` and `2` → rectangle).
+ */
+export const KEY_TO_TOOL: Record<string, ToolType> = TOOLS.reduce((map, t) => {
+    if (t.key) map[t.key] = t.type;
+    if (t.num !== undefined) map[String(t.num)] = t.type;
+    return map;
+}, {} as Record<string, ToolType>);
 
 // ─── Zoom ─────────────────────────────────────────────────────
 export const MIN_ZOOM = 0.1;
