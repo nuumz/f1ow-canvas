@@ -16,7 +16,6 @@ import {
     computeBindingGap,
     getEdgePointFromFixedPoint,
 } from '@/utils/connection';
-import { useCanvasStore } from '@/store/useCanvasStore';
 
 /**
  * Module-level variable to track the last raw cursor position during drawing.
@@ -32,6 +31,106 @@ let _lastRawEndPos: Point | null = null;
  * Prevents edge/center mode flickering at the boundary during drawing.
  */
 let _lastSnapIsPrecise: boolean | undefined = undefined;
+
+/**
+ * Finalize-or-discard the in-flight line/arrow and reset all linear gesture
+ * state, resuming history so the draw is balanced. Shared by onMouseUp and
+ * deactivate so a normal release, a tool switch, or a release outside the Stage
+ * all end the draw identically — WITHOUT changing the active tool (the caller
+ * does that via commitTool). Safe to call when no draw is in progress.
+ */
+function finalizeLinear(ctx: ToolContext): void {
+    if (!ctx.currentElementIdRef.current) return;
+
+    const el = ctx.elements.find((e) => e.id === ctx.currentElementIdRef.current) as LineElement | ArrowElement | undefined;
+    if (el) {
+        const pts = el.points;
+        const segLen = Math.sqrt(
+            (pts[pts.length - 2] - pts[0]) ** 2 +
+            (pts[pts.length - 1] - pts[1]) ** 2,
+        );
+
+        // Delete degenerate (zero-length) lines
+        if (segLen < 2) {
+            // Resume before deleteElements (its internal pushHistory will find
+            // no diff since the element was added while history was paused).
+            ctx.store.getState().resumeHistory();
+            ctx.deleteElements([ctx.currentElementIdRef.current]);
+            ctx.currentElementIdRef.current = null;
+            ctx.startBindingRef.current = null;
+            ctx.setSnapTarget(null);
+            _lastRawEndPos = null;
+            _lastSnapIsPrecise = undefined;
+        } else {
+            // Use the raw cursor position for snap detection, NOT the already-snapped
+            // endpoint from the element state. The element endpoint was snapped to the
+            // shape edge in onMouseMove, which would always resolve to edge binding.
+            // Using the raw position allows center detection when the cursor is deep
+            // inside a shape.
+            const rawEndPos = _lastRawEndPos ?? {
+                x: el.x + pts[pts.length - 2],
+                y: el.y + pts[pts.length - 1],
+            };
+            const excludeIds = new Set([el.id]);
+            if (el.startBinding) excludeIds.add(el.startBinding.elementId);
+            const endGapFinal = computeBindingGap(el.style.strokeWidth ?? 2);
+            const endSnap = findNearestSnapTarget(rawEndPos, ctx.elements, 24, excludeIds, undefined, undefined, endGapFinal, _lastSnapIsPrecise);
+
+            const endGap = computeBindingGap(el.style.strokeWidth ?? 2);
+            const endBind: Binding | null = endSnap
+                ? { elementId: endSnap.elementId, fixedPoint: endSnap.fixedPoint, gap: endGap, isPrecise: endSnap.isPrecise, snapMode: endSnap.snapMode, elementVersion: ctx.elements.find(e => e.id === endSnap.elementId)?.version ?? 0 }
+                : null;
+            const startBind = el.startBinding ?? ctx.startBindingRef.current;
+            const finalEndBind =
+                endBind && startBind && endBind.elementId === startBind.elementId
+                    ? null
+                    : endBind;
+
+            const finalPts = [...pts];
+            if (endSnap) {
+                finalPts[finalPts.length - 2] = endSnap.position.x - el.x;
+                finalPts[finalPts.length - 1] = endSnap.position.y - el.y;
+            }
+
+            const updates: Partial<LineElement | ArrowElement> = {
+                points: finalPts,
+                width: Math.abs(finalPts[finalPts.length - 2] - finalPts[0]),
+                height: Math.abs(finalPts[finalPts.length - 1] - finalPts[1]),
+                startBinding: startBind,
+                endBinding: finalEndBind,
+            };
+
+            const tempEl = { ...el, ...updates } as LineElement | ArrowElement;
+            const recomputed = recomputeBoundPoints(tempEl, ctx.elements);
+            if (recomputed) Object.assign(updates, recomputed);
+
+            ctx.updateElement(el.id, updates);
+
+            // Sync bidirectional boundElements on target shapes
+            const connType = el.type as 'arrow' | 'line';
+            const fresh1 = ctx.store.getState().elements;
+            syncBoundElements(el.id, connType, null, startBind, fresh1, ctx.updateElement);
+            const fresh2 = ctx.store.getState().elements;
+            syncBoundElements(el.id, connType, null, finalEndBind, fresh2, ctx.updateElement);
+
+            ctx.startBindingRef.current = null;
+            ctx.setSnapTarget(null);
+
+            ctx.setSelectedIds([ctx.currentElementIdRef.current!]);
+            // Resume history then push one single atomic entry for the whole draw.
+            ctx.store.getState().resumeHistory();
+            ctx.pushHistory();
+        }
+    }
+
+    _lastRawEndPos = null;
+    _lastSnapIsPrecise = undefined;
+    // Safety: ensure history is never left paused (e.g. if el was not found).
+    ctx.store.getState().resumeHistory();
+    ctx.setIsDrawing(false);
+    ctx.setDrawStart(null);
+    ctx.currentElementIdRef.current = null;
+}
 
 export const linearTool: ToolHandler = {
     name: 'line', // also handles 'arrow'
@@ -66,7 +165,7 @@ export const linearTool: ToolHandler = {
 
         // Pause history so addElement does NOT push an intermediate snapshot
         // with points:[0,0,0,0]. A single clean entry is pushed in onMouseUp.
-        useCanvasStore.getState().pauseHistory();
+        ctx.store.getState().pauseHistory();
 
         const base = {
             id,
@@ -86,7 +185,7 @@ export const linearTool: ToolHandler = {
         };
 
         // Read current defaults from store
-        const { currentLineType, currentStartArrowhead, currentEndArrowhead } = useCanvasStore.getState();
+        const { currentLineType, currentStartArrowhead, currentEndArrowhead } = ctx.store.getState();
 
         const el: CanvasElement = ctx.activeTool === 'arrow'
             ? { ...base, type: 'arrow', startArrowhead: currentStartArrowhead, endArrowhead: currentEndArrowhead, lineType: currentLineType } as ArrowElement
@@ -177,97 +276,14 @@ export const linearTool: ToolHandler = {
     },
 
     onMouseUp(ctx: ToolContext) {
-        if (!ctx.currentElementIdRef.current) return;
-
-        const el = ctx.elements.find((e) => e.id === ctx.currentElementIdRef.current) as LineElement | ArrowElement | undefined;
-        if (el) {
-            const pts = el.points;
-            const segLen = Math.sqrt(
-                (pts[pts.length - 2] - pts[0]) ** 2 +
-                (pts[pts.length - 1] - pts[1]) ** 2,
-            );
-
-            // Delete degenerate (zero-length) lines
-            if (segLen < 2) {
-                // Resume before deleteElements (its internal pushHistory will find
-                // no diff since the element was added while history was paused).
-                useCanvasStore.getState().resumeHistory();
-                ctx.deleteElements([ctx.currentElementIdRef.current]);
-                ctx.currentElementIdRef.current = null;
-                ctx.startBindingRef.current = null;
-                ctx.setSnapTarget(null);
-                _lastRawEndPos = null;
-                _lastSnapIsPrecise = undefined;
-            } else {
-                // Use the raw cursor position for snap detection, NOT the already-snapped
-                // endpoint from the element state. The element endpoint was snapped to the
-                // shape edge in onMouseMove, which would always resolve to edge binding.
-                // Using the raw position allows center detection when the cursor is deep
-                // inside a shape.
-                const rawEndPos = _lastRawEndPos ?? {
-                    x: el.x + pts[pts.length - 2],
-                    y: el.y + pts[pts.length - 1],
-                };
-                const excludeIds = new Set([el.id]);
-                if (el.startBinding) excludeIds.add(el.startBinding.elementId);
-                const endGapFinal = computeBindingGap(el.style.strokeWidth ?? 2);
-                const endSnap = findNearestSnapTarget(rawEndPos, ctx.elements, 24, excludeIds, undefined, undefined, endGapFinal, _lastSnapIsPrecise);
-
-                const endGap = computeBindingGap(el.style.strokeWidth ?? 2);
-                const endBind: Binding | null = endSnap
-                    ? { elementId: endSnap.elementId, fixedPoint: endSnap.fixedPoint, gap: endGap, isPrecise: endSnap.isPrecise, snapMode: endSnap.snapMode, elementVersion: ctx.elements.find(e => e.id === endSnap.elementId)?.version ?? 0 }
-                    : null;
-                const startBind = el.startBinding ?? ctx.startBindingRef.current;
-                const finalEndBind =
-                    endBind && startBind && endBind.elementId === startBind.elementId
-                        ? null
-                        : endBind;
-
-                const finalPts = [...pts];
-                if (endSnap) {
-                    finalPts[finalPts.length - 2] = endSnap.position.x - el.x;
-                    finalPts[finalPts.length - 1] = endSnap.position.y - el.y;
-                }
-
-                const updates: Partial<LineElement | ArrowElement> = {
-                    points: finalPts,
-                    width: Math.abs(finalPts[finalPts.length - 2] - finalPts[0]),
-                    height: Math.abs(finalPts[finalPts.length - 1] - finalPts[1]),
-                    startBinding: startBind,
-                    endBinding: finalEndBind,
-                };
-
-                const tempEl = { ...el, ...updates } as LineElement | ArrowElement;
-                const recomputed = recomputeBoundPoints(tempEl, ctx.elements);
-                if (recomputed) Object.assign(updates, recomputed);
-
-                ctx.updateElement(el.id, updates);
-
-                // Sync bidirectional boundElements on target shapes
-                const connType = el.type as 'arrow' | 'line';
-                const fresh1 = useCanvasStore.getState().elements;
-                syncBoundElements(el.id, connType, null, startBind, fresh1, ctx.updateElement);
-                const fresh2 = useCanvasStore.getState().elements;
-                syncBoundElements(el.id, connType, null, finalEndBind, fresh2, ctx.updateElement);
-
-                ctx.startBindingRef.current = null;
-                ctx.setSnapTarget(null);
-
-                ctx.setSelectedIds([ctx.currentElementIdRef.current!]);
-                // Resume history then push one single atomic entry for the whole draw.
-                useCanvasStore.getState().resumeHistory();
-                ctx.pushHistory();
-            }
-        }
-
-        _lastRawEndPos = null;
-        _lastSnapIsPrecise = undefined;
-        // Safety: ensure history is never left paused (e.g. if el was not found).
-        useCanvasStore.getState().resumeHistory();
-        ctx.setIsDrawing(false);
-        ctx.setDrawStart(null);
-        ctx.currentElementIdRef.current = null;
+        finalizeLinear(ctx);
         ctx.commitTool();
+    },
+
+    deactivate(ctx: ToolContext) {
+        // Finalize/discard the in-flight line WITHOUT switching tools — used on
+        // a tool switch and on a release/cancel outside the Stage.
+        finalizeLinear(ctx);
     },
 
     getCursor() {

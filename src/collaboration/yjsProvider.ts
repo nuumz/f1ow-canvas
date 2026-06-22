@@ -1,5 +1,11 @@
 /**
- * collaboration/yjsProvider.ts — Yjs document + WebSocket provider management.
+ * collaboration/yjsProvider.ts — LEGACY module-level Yjs provider singleton.
+ *
+ * @deprecated Superseded by the instance-scoped {@link CollaborationManager},
+ * which owns its own `Y.Doc` + `WebsocketProvider` per canvas instance. This
+ * module-level singleton only supports one collaboration session per page and
+ * is kept solely for backward compatibility (it still backs the deprecated
+ * `syncBridge.ts`). New code should use `useCollaboration` / `CollaborationManager`.
  *
  * Creates and manages:
  *   - Y.Doc: the shared CRDT document

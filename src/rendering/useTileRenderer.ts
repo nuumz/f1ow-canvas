@@ -37,6 +37,54 @@ export interface UseTileRendererOptions {
     spatialQuery?: TileSpatialQuery;
 }
 
+/**
+ * Build a change-detection signature for an element.
+ *
+ * `version` is bumped by the store on geometry/point mutations, but style,
+ * visibility, and text edits are NOT version-tracked — so fold those into the
+ * signature explicitly. Large point arrays are intentionally excluded: any
+ * change to them already bumps `version`.
+ */
+function elementSignature(el: CanvasElement): string {
+    const s = el.style;
+    const style = `${s.fillColor}|${s.strokeColor}|${s.strokeWidth}|${s.opacity}|${s.strokeStyle}|${s.roughness}|${s.fontSize}|${s.fontFamily}`;
+    const text = el.type === 'text' ? el.text : '';
+    return `${el.version}|${el.isVisible ? 1 : 0}|${style}|${text}`;
+}
+
+/** Result of diffing the previous frame's elements against the current frame. */
+export interface ElementDiffResult {
+    /** Elements added since the last frame or whose visual signature changed. */
+    changed: CanvasElement[];
+    /** Ids of elements present last frame but gone this frame. */
+    removed: string[];
+    /** Signature map for the current frame, to carry into the next diff. */
+    next: Map<string, string>;
+}
+
+/**
+ * Diff the current elements against the previous frame's signatures.
+ * Pure helper extracted from the hook so the invalidation logic is testable
+ * without a React renderer.
+ */
+export function diffElements(
+    prev: Map<string, string>,
+    elements: CanvasElement[],
+): ElementDiffResult {
+    const next = new Map<string, string>();
+    const changed: CanvasElement[] = [];
+    for (const el of elements) {
+        const sig = elementSignature(el);
+        next.set(el.id, sig);
+        if (prev.get(el.id) !== sig) changed.push(el);
+    }
+    const removed: string[] = [];
+    for (const id of prev.keys()) {
+        if (!next.has(id)) removed.push(id);
+    }
+    return { changed, removed, next };
+}
+
 export interface UseTileRendererReturn {
     /** Whether tile rendering is active for the current frame */
     isActive: boolean;
@@ -73,8 +121,13 @@ export function useTileRenderer(
 
     // Create or recreate renderer when config changes
     const rendererRef = useRef<TileRenderer | null>(null);
+    // Per-element signatures from the previous frame, for change detection.
+    const prevSignaturesRef = useRef<Map<string, string>>(new Map());
 
     useEffect(() => {
+        // Skip allocation entirely when disabled so the default Konva path
+        // pays nothing for an unused tile engine.
+        if (!enabled) return;
         rendererRef.current = new TileRenderer({
             maxCachedTiles,
             drawFn,
@@ -85,9 +138,9 @@ export function useTileRenderer(
             rendererRef.current = null;
         };
         // We intentionally only recreate when factory inputs change; spatialQuery
-        // updates are forwarded via setSpatialQuery below.
+        // updates are forwarded inside the tiles memo / the effect below.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [maxCachedTiles, drawFn]);
+    }, [enabled, maxCachedTiles, drawFn]);
 
     // Forward spatial query updates without recreating the renderer.
     useEffect(() => {
@@ -99,10 +152,24 @@ export function useTileRenderer(
 
     // Compute visible tiles
     const tiles = useMemo(() => {
-        if (!isActive || !rendererRef.current || stageWidth === 0 || stageHeight === 0) {
+        const renderer = rendererRef.current;
+        if (!isActive || !renderer || stageWidth === 0 || stageHeight === 0) {
             return [];
         }
-        const raw = rendererRef.current.getTiles(viewport, stageWidth, stageHeight, elements);
+        // Apply the latest spatial query BEFORE rasterising. Doing this here (in
+        // the render-phase memo) rather than only in the effect below guarantees
+        // tiles rasterised on the same commit the query/elements changed use the
+        // current index — no one-frame-stale tile.
+        renderer.setSpatialQuery(spatialQuery ?? null);
+        // Diff against the previous frame and invalidate affected tiles BEFORE
+        // fetching, so element edits/moves/adds/removes repaint immediately
+        // instead of waiting for LRU eviction (stale cached bitmaps).
+        const { changed, removed, next } = diffElements(prevSignaturesRef.current, elements);
+        prevSignaturesRef.current = next;
+        if (changed.length > 0 || removed.length > 0) {
+            renderer.invalidateChangedElements(changed, removed);
+        }
+        const raw = renderer.getTiles(viewport, stageWidth, stageHeight, elements);
         return raw.map((t) => ({
             key: `${t.coord.zoom}:${t.coord.col}:${t.coord.row}`,
             bitmap: t.bitmap,
@@ -111,7 +178,7 @@ export function useTileRenderer(
             worldSize: t.worldSize,
         }));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isActive, viewport.x, viewport.y, viewport.scale, stageWidth, stageHeight, elements]);
+    }, [isActive, viewport.x, viewport.y, viewport.scale, stageWidth, stageHeight, elements, spatialQuery]);
 
     const invalidateElementsCb = useCallback((ids: string[]) => {
         rendererRef.current?.invalidateElements(ids);

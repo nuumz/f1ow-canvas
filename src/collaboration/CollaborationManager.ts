@@ -1,29 +1,36 @@
 /**
- * collaboration/CollaborationManager.ts — Instance-based collaboration manager.
+ * collaboration/CollaborationManager.ts — Instance-scoped collaboration engine.
  *
- * Encapsulates the Yjs provider + sync bridge lifecycle in a single class,
- * replacing the legacy module-level singletons. This allows multiple
- * FlowCanvas instances on the same page to have independent collaboration
- * sessions.
+ * The single live engine for real-time collaboration. Each FlowCanvas instance
+ * owns one manager, which encapsulates:
+ *   - the Yjs `Y.Doc` + `WebsocketProvider` lifecycle,
+ *   - awareness (cursor / selection / tool presence),
+ *   - and a {@link CanvasSyncEngine} that performs genuine op-based CRDT
+ *     synchronization between the doc and a Zustand store.
+ *
+ * Convergence (no lost updates under concurrent edits) is provided by the
+ * sync engine + shared codec, NOT by this class — see `syncEngine.ts` and
+ * `syncBridgeCodec.ts`. This class is the transport + presence wrapper and the
+ * consolidation point that the legacy module-level bridge (`syncBridge.ts`) and
+ * worker (`syncWorker.worker.ts`) are deprecated in favour of.
  *
  * Usage:
  *   const mgr = new CollaborationManager();
  *   mgr.connect(config);
- *   mgr.startSync(store, 50);
+ *   mgr.startSync(store, 50);   // store: CanvasStore
  *   // ... later
  *   mgr.dispose();
  */
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import type { CanvasElement } from '@/types';
+import type { CanvasStore } from '@/store/useCanvasStore';
 import type {
     CollaborationConfig,
     ConnectionStatus,
     AwarenessState,
 } from './types';
-
-// Re-use the serialization helpers from syncBridge
-import { elementToYMap, yMapToElement } from './syncBridgeCodec';
+import { CanvasSyncEngine, type EngineStore } from './syncEngine';
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -31,12 +38,6 @@ export interface CollaborationManagerOptions {
     /** Debounce interval for local→Yjs sync (ms). @default 50 */
     syncDebounceMs?: number;
 }
-
-type StoreApi = {
-    getState: () => { elements: CanvasElement[]; selectedIds: string[]; activeTool: string };
-    subscribe: (listener: (state: { elements: CanvasElement[]; selectedIds: string[]; activeTool: string }, prev: { elements: CanvasElement[]; selectedIds: string[]; activeTool: string }) => void) => () => void;
-    setElements: (elements: CanvasElement[]) => void;
-};
 
 // ─── Manager Class ────────────────────────────────────────────
 
@@ -46,15 +47,8 @@ export class CollaborationManager {
     private _provider: WebsocketProvider | null = null;
     private _config: CollaborationConfig | null = null;
 
-    // Sync state
-    private _isApplyingRemote = false;
-    private _isApplyingLocal = false;
-    private _lastElements: CanvasElement[] = [];
-    private _syncTimer: ReturnType<typeof setTimeout> | null = null;
-    private _deepTimer: ReturnType<typeof setTimeout> | null = null;
-    private _dirtyIds = new Set<string>();
-    private _storeUnsub: (() => void) | null = null;
-    private _yObserverCleanup: (() => void) | null = null;
+    // Sync engine
+    private _engine: CanvasSyncEngine | null = null;
 
     // Status listeners
     private _statusListeners = new Set<(status: ConnectionStatus) => void>();
@@ -107,11 +101,14 @@ export class CollaborationManager {
         return { doc: this._doc, provider: this._provider };
     }
 
-    /**
-     * Get the shared Y.Map for elements.
-     */
+    /** Get the shared Y.Map for elements. */
     getYElements(): Y.Map<Y.Map<unknown>> | null {
-        return this._doc?.getMap('elements') as Y.Map<Y.Map<unknown>> | null;
+        return (this._doc?.getMap('elements') as Y.Map<Y.Map<unknown>>) ?? null;
+    }
+
+    /** Get the shared tombstone map (deleted element ids → timestamp). */
+    getTombstones(): Y.Map<number> | null {
+        return (this._doc?.getMap('tombstones') as Y.Map<number>) ?? null;
     }
 
     // ─── Awareness ────────────────────────────────────────────
@@ -145,153 +142,36 @@ export class CollaborationManager {
     // ─── Sync Bridge ─────────────────────────────────────────
 
     /**
-     * Start bidirectional sync between Yjs and the provided store.
+     * Start bidirectional, genuinely-convergent sync between the connected Yjs
+     * doc and the provided store. Idempotent: a prior engine is stopped first.
+     *
+     * @param store      the canvas store to mirror (per-instance)
+     * @param debounceMs local→Yjs batching debounce (ms)
      */
-    startSync(store: StoreApi, debounceMs = 50): void {
+    startSync(store: CanvasStore, debounceMs = 50): void {
         const doc = this._doc;
-        const yElements = this.getYElements();
-        if (!doc || !yElements) {
+        if (!doc) {
             console.warn('[CollaborationManager] Cannot start sync — not connected');
             return;
         }
-
         this.stopSync();
 
-        // ─── Initial sync ─────────────────────────────────────
-        if (yElements.size > 0) {
-            this._isApplyingRemote = true;
-            const elements = this._yMapCollectionToElements(yElements);
-            store.setElements(elements);
-            this._lastElements = elements;
-            this._isApplyingRemote = false;
-        } else {
-            const localElements = store.getState().elements;
-            if (localElements.length > 0) {
-                this._isApplyingLocal = true;
-                doc.transact(() => {
-                    for (const el of localElements) {
-                        const yMap = new Y.Map<unknown>();
-                        elementToYMap(el, yMap);
-                        yElements.set(el.id, yMap);
-                    }
-                }, 'local-init');
-                this._isApplyingLocal = false;
-            }
-            this._lastElements = localElements;
-        }
-
-        // ─── Yjs → Store (incremental top-level observer) ────
-        const yObserver = (events: Y.YMapEvent<Y.Map<unknown>>, transaction: Y.Transaction) => {
-            if (transaction.origin === 'local-sync' || transaction.origin === 'local-init') return;
-            if (this._isApplyingLocal) return;
-
-            this._isApplyingRemote = true;
-            let elements = [...this._lastElements];
-            let changed = false;
-
-            for (const [key, change] of events.keys) {
-                if (change.action === 'add' || change.action === 'update') {
-                    const yMap = yElements.get(key);
-                    if (yMap) {
-                        const el = yMapToElement(yMap);
-                        if (el) {
-                            const idx = elements.findIndex(e => e.id === key);
-                            if (idx >= 0) elements[idx] = el;
-                            else elements.push(el);
-                            changed = true;
-                        }
-                    }
-                } else if (change.action === 'delete') {
-                    elements = elements.filter(e => e.id !== key);
-                    changed = true;
-                }
-            }
-
-            if (changed) {
-                elements.sort((a, b) => {
-                    if (a.sortOrder && b.sortOrder) {
-                        return a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0;
-                    }
-                    return 0;
-                });
-                store.setElements(elements);
-                this._lastElements = elements;
-            }
-
-            this._isApplyingRemote = false;
+        const engineStore: EngineStore = {
+            getElements: () => store.getState().elements,
+            setElements: (elements: CanvasElement[]) => store.getState().setElements(elements),
+            subscribeElements: (listener) =>
+                store.subscribe((state, prev) => {
+                    if (state.elements !== prev.elements) listener(state.elements);
+                }),
         };
 
-        // ─── Deep observer (field-level changes) ─────────────
-        const deepObserver = (events: Y.YEvent<Y.Map<unknown>>[]) => {
-            if (this._isApplyingLocal) return;
-
-            for (const event of events) {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                let target: any = event.target;
-                while (target && !(target instanceof Y.Map && target.parent === yElements)) {
-                    target = target.parent;
-                }
-                if (target instanceof Y.Map) {
-                    const id = target.get('id') as string;
-                    if (id) this._dirtyIds.add(id);
-                }
-            }
-
-            if (this._deepTimer) clearTimeout(this._deepTimer);
-            this._deepTimer = setTimeout(() => {
-                if (this._dirtyIds.size === 0 || this._isApplyingLocal) return;
-
-                this._isApplyingRemote = true;
-                let elements = [...this._lastElements];
-                let changed = false;
-
-                for (const id of this._dirtyIds) {
-                    const yMap = yElements.get(id);
-                    if (!yMap) continue;
-                    const el = yMapToElement(yMap);
-                    if (!el) continue;
-                    const idx = elements.findIndex(e => e.id === id);
-                    if (idx >= 0) { elements[idx] = el; changed = true; }
-                }
-                this._dirtyIds.clear();
-
-                if (changed) {
-                    store.setElements(elements);
-                    this._lastElements = elements;
-                }
-                this._isApplyingRemote = false;
-            }, 16);
-        };
-
-        yElements.observe(yObserver);
-        yElements.observeDeep(deepObserver);
-
-        this._yObserverCleanup = () => {
-            yElements.unobserve(yObserver);
-            yElements.unobserveDeep(deepObserver);
-            if (this._deepTimer) clearTimeout(this._deepTimer);
-            this._dirtyIds.clear();
-        };
-
-        // ─── Store → Yjs (local changes) ─────────────────────
-        this._storeUnsub = store.subscribe((state) => {
-            if (this._isApplyingRemote) return;
-            if (state.elements === this._lastElements) return;
-
-            if (this._syncTimer) clearTimeout(this._syncTimer);
-            this._syncTimer = setTimeout(() => {
-                this._syncLocalToYjs(state.elements, yElements, doc);
-            }, debounceMs);
-        });
+        this._engine = new CanvasSyncEngine(doc, engineStore, { debounceMs });
+        this._engine.start();
     }
 
     stopSync(): void {
-        this._storeUnsub?.();
-        this._storeUnsub = null;
-        this._yObserverCleanup?.();
-        this._yObserverCleanup = null;
-        if (this._syncTimer) { clearTimeout(this._syncTimer); this._syncTimer = null; }
-        this._lastElements = [];
+        this._engine?.stop();
+        this._engine = null;
     }
 
     // ─── Dispose ──────────────────────────────────────────────
@@ -310,123 +190,5 @@ export class CollaborationManager {
         }
         this._config = null;
         this._statusListeners.clear();
-    }
-
-    // ─── Private ──────────────────────────────────────────────
-
-    private _syncLocalToYjs(
-        elements: CanvasElement[],
-        yElements: Y.Map<Y.Map<unknown>>,
-        doc: Y.Doc,
-    ): void {
-        this._isApplyingLocal = true;
-        this._lastElements = elements;
-
-        const localMap = new Map<string, CanvasElement>();
-        for (const el of elements) localMap.set(el.id, el);
-
-        doc.transact(() => {
-            for (const [id] of yElements.entries()) {
-                if (!localMap.has(id)) yElements.delete(id);
-            }
-            for (const el of elements) {
-                let yMap = yElements.get(el.id);
-                if (!yMap) {
-                    yMap = new Y.Map<unknown>();
-                    elementToYMap(el, yMap);
-                    yElements.set(el.id, yMap);
-                } else {
-                    this._updateYMapFromElement(el, yMap);
-                }
-            }
-        }, 'local-sync');
-
-        this._isApplyingLocal = false;
-    }
-
-    private _updateYMapFromElement(el: CanvasElement, yMap: Y.Map<unknown>): void {
-        const SYNC_FIELDS = [
-            'id', 'type', 'x', 'y', 'width', 'height', 'rotation',
-            'isLocked', 'isVisible', 'sortOrder',
-        ] as const;
-        const STYLE_FIELDS = [
-            'strokeColor', 'fillColor', 'strokeWidth', 'opacity',
-            'strokeStyle', 'roughness', 'fontSize', 'fontFamily',
-        ] as const;
-
-        const elRecord = el as unknown as Record<string, unknown>;
-        for (const field of SYNC_FIELDS) {
-            const value = elRecord[field];
-            if (value !== yMap.get(field)) yMap.set(field, value);
-        }
-
-        if (el.style) {
-            for (const sf of STYLE_FIELDS) {
-                const val = el.style[sf];
-                if (val !== yMap.get(`style.${sf}`)) yMap.set(`style.${sf}`, val);
-            }
-        }
-
-        const beJson = el.boundElements ? JSON.stringify(el.boundElements) : null;
-        if (beJson !== yMap.get('boundElements')) yMap.set('boundElements', beJson);
-
-        // Type-specific (delegated to codec)
-        switch (el.type) {
-            case 'rectangle':
-                if (el.cornerRadius !== yMap.get('cornerRadius')) yMap.set('cornerRadius', el.cornerRadius);
-                break;
-            case 'line':
-            case 'arrow': {
-                const ptsJson = JSON.stringify(el.points);
-                if (ptsJson !== yMap.get('points')) yMap.set('points', ptsJson);
-                if (el.lineType !== yMap.get('lineType')) yMap.set('lineType', el.lineType);
-                if (el.curvature !== yMap.get('curvature')) yMap.set('curvature', el.curvature);
-                const sbJson = el.startBinding ? JSON.stringify(el.startBinding) : null;
-                if (sbJson !== yMap.get('startBinding')) yMap.set('startBinding', sbJson);
-                const ebJson = el.endBinding ? JSON.stringify(el.endBinding) : null;
-                if (ebJson !== yMap.get('endBinding')) yMap.set('endBinding', ebJson);
-                if (el.type === 'arrow') {
-                    if (el.startArrowhead !== yMap.get('startArrowhead')) yMap.set('startArrowhead', el.startArrowhead);
-                    if (el.endArrowhead !== yMap.get('endArrowhead')) yMap.set('endArrowhead', el.endArrowhead);
-                }
-                break;
-            }
-            case 'freedraw': {
-                const fpJson = JSON.stringify(el.points);
-                if (fpJson !== yMap.get('points')) yMap.set('points', fpJson);
-                break;
-            }
-            case 'text':
-                if (el.text !== yMap.get('text')) yMap.set('text', el.text);
-                if (el.containerId !== yMap.get('containerId')) yMap.set('containerId', el.containerId);
-                if (el.textAlign !== yMap.get('textAlign')) yMap.set('textAlign', el.textAlign);
-                if (el.verticalAlign !== yMap.get('verticalAlign')) yMap.set('verticalAlign', el.verticalAlign);
-                break;
-            case 'image':
-                if (el.src !== yMap.get('src')) yMap.set('src', el.src);
-                if (el.naturalWidth !== yMap.get('naturalWidth')) yMap.set('naturalWidth', el.naturalWidth);
-                if (el.naturalHeight !== yMap.get('naturalHeight')) yMap.set('naturalHeight', el.naturalHeight);
-                if (el.scaleMode !== yMap.get('scaleMode')) yMap.set('scaleMode', el.scaleMode);
-                const cropJson = el.crop ? JSON.stringify(el.crop) : null;
-                if (cropJson !== yMap.get('crop')) yMap.set('crop', cropJson);
-                if (el.cornerRadius !== yMap.get('cornerRadius')) yMap.set('cornerRadius', el.cornerRadius);
-                if (el.alt !== yMap.get('alt')) yMap.set('alt', el.alt);
-                break;
-        }
-    }
-
-    private _yMapCollectionToElements(yElements: Y.Map<Y.Map<unknown>>): CanvasElement[] {
-        const elements: CanvasElement[] = [];
-        for (const [, yMap] of yElements.entries()) {
-            const el = yMapToElement(yMap);
-            if (el) elements.push(el);
-        }
-        elements.sort((a, b) => {
-            if (a.sortOrder && b.sortOrder) {
-                return a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0;
-            }
-            return 0;
-        });
-        return elements;
     }
 }

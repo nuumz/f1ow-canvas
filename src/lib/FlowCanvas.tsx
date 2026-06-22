@@ -8,7 +8,7 @@ import React, {
     useCallback,
     useState,
 } from 'react';
-import { Stage, Layer, Line as KonvaLine, Group as KonvaGroup, Rect as KonvaRect, Path as KonvaPath } from 'react-konva';
+import { Stage, Layer, Line as KonvaLine, Group as KonvaGroup, Rect as KonvaRect, Path as KonvaPath, Image as KonvaImage } from 'react-konva';
 import Konva from 'konva';
 
 // ─── Konva global configuration ──────────────────────────────
@@ -25,12 +25,15 @@ import type {
     LineElement,
     ArrowElement,
     TextElement,
+    RectangleElement,
+    FreeDrawElement,
     ToolType,
     SnapTarget,
     Binding,
 } from '../types';
 import { generateId } from '../utils/id';
-import { snapToGrid } from '../utils/geometry';
+import { snapToGrid, getStrokeDash } from '../utils/geometry';
+import { computeCurveControlPoint, CURVE_RATIO } from '../utils/curve';
 import {
     recomputeBoundPoints,
     findConnectorsForElement,
@@ -62,8 +65,13 @@ import { useViewportCulling } from '../hooks/useViewportCulling';
 import { useSpatialIndex } from '../hooks/useSpatialIndex';
 import { useEfficientZoom } from '../hooks/useEfficientZoom';
 import { useProgressiveRender } from '../hooks/useProgressiveRender';
-import { rafThrottle, toSet } from '../utils/performance';
-import { disposeElbowWorkerManager } from '../utils/elbowWorkerManager';
+import { rafThrottle, toSet, type AABB } from '../utils/performance';
+import { useWebGLHybrid } from '../webgl/useWebGLHybrid';
+import type { ElementRasterFn } from '../webgl/textureAtlas';
+import { useTileRenderer, diffElements } from '../rendering/useTileRenderer';
+import type { TileDrawFn, TileSpatialQuery } from '../rendering/tileRenderer';
+import { SpatialSoA } from '../utils/spatialSoA';
+import { ElbowWorkerManager } from '../utils/elbowWorkerManager';
 import { disposeExportWorkerManager } from '../utils/exportWorkerManager';
 import { elementRegistry } from '../utils/elementRegistry';
 import {
@@ -79,10 +87,10 @@ import { syncAfterDrag, computeBoundTextPosition, BOUND_TEXT_PADDING, CONTAINER_
 import { orderBoundTextWithContainers } from '../utils/textBinding';
 
 import type { FlowCanvasProps, FlowCanvasRef, ContextMenuContext } from './FlowCanvasProps';
-import { DEFAULT_THEME } from './FlowCanvasProps';
+import { DEFAULT_THEME, resolveRenderStrategy, DEFAULT_RENDERER_ELEMENT_THRESHOLD } from './FlowCanvasProps';
 import { useCollaboration } from '../collaboration/useCollaboration';
 import CursorOverlay from '../collaboration/CursorOverlay';
-import { WorkerConfigContext } from '../contexts/WorkerConfigContext';
+import { WorkerConfigContext, type WorkerConfigContextValue } from '../contexts/WorkerConfigContext';
 import { AnnotationsOverlay } from '../components/Canvas/AnnotationsOverlay';
 import { TextHtmlOverlay } from '../components/Canvas/TextHtmlOverlay';
 
@@ -105,6 +113,151 @@ function arraysShallowEqual<T>(a: T[], b: T[]): boolean {
  * against performance (eliminating cascading O(n) recomputation).
  */
 const MULTI_DRAG_STORE_SKIP_THRESHOLD = 10;
+
+// Stable empty array — handed to the accelerated path on the default ('konva')
+// strategy so its memos keep a constant identity and never do work.
+const EMPTY_ELEMENTS: CanvasElementType[] = [];
+
+// ─── Accelerated-renderer rasterisation (EXPERIMENTAL) ───────────
+// The WebGL / tile engines turn an element into pixels. To keep fidelity high
+// we REUSE Konva — build the element's Konva node and read it back via
+// `node.toCanvas()` — instead of re-implementing a parallel 2D drawing path.
+//
+// Skipped on purpose:
+//   • text  — every text element renders through the HTML overlay
+//             (TextHtmlOverlay); its Konva node is intentionally transparent,
+//             so text is already faithful on every path and rasterising it here
+//             would only waste atlas / tile space.
+//   • image — the decoded bitmap isn't available synchronously here.
+// Both fall through to `null` and are simply not drawn on the accelerated layer.
+
+/** Build a detached Konva node mirroring an element's static (clean) appearance. */
+function buildRasterNode(el: CanvasElementType): Konva.Node | null {
+    if (!el.isVisible) return null;
+    const style = el.style;
+    const dash = getStrokeDash(style.strokeStyle, style.strokeWidth);
+    const base = {
+        opacity: style.opacity ?? 1,
+        listening: false,
+        perfectDrawEnabled: false,
+        shadowForStrokeEnabled: false,
+    };
+    switch (el.type) {
+        case 'rectangle': {
+            const r = el as RectangleElement;
+            return new Konva.Rect({
+                ...base,
+                x: el.x, y: el.y, width: el.width, height: el.height, rotation: el.rotation,
+                cornerRadius: r.cornerRadius,
+                fill: style.fillColor, stroke: style.strokeColor, strokeWidth: style.strokeWidth, dash,
+            });
+        }
+        case 'ellipse':
+            return new Konva.Ellipse({
+                ...base,
+                x: el.x + el.width / 2, y: el.y + el.height / 2,
+                radiusX: el.width / 2, radiusY: el.height / 2, rotation: el.rotation,
+                fill: style.fillColor, stroke: style.strokeColor, strokeWidth: style.strokeWidth, dash,
+            });
+        case 'diamond': {
+            const w = el.width, h = el.height;
+            return new Konva.Line({
+                ...base,
+                x: el.x, y: el.y, rotation: el.rotation, closed: true,
+                points: [w / 2, 0, w, h / 2, w / 2, h, 0, h / 2],
+                fill: style.fillColor, stroke: style.strokeColor, strokeWidth: style.strokeWidth,
+                dash, lineJoin: 'round',
+            });
+        }
+        case 'line': {
+            const l = el as LineElement;
+            // Curved connectors use a quadratic bézier — reuse the same control
+            // point the live shape computes so the rasterised curve matches.
+            if (l.lineType === 'curved' && l.points.length >= 4) {
+                const sx = l.points[0], sy = l.points[1];
+                const ex = l.points[l.points.length - 2], ey = l.points[l.points.length - 1];
+                const cp = computeCurveControlPoint({ x: sx, y: sy }, { x: ex, y: ey }, l.curvature ?? CURVE_RATIO);
+                return new Konva.Shape({
+                    ...base,
+                    x: el.x, y: el.y, rotation: el.rotation,
+                    stroke: style.strokeColor, strokeWidth: style.strokeWidth, dash,
+                    lineCap: 'round', lineJoin: 'round',
+                    sceneFunc: (ctx: Konva.Context, shape: Konva.Shape) => {
+                        ctx.beginPath();
+                        ctx.moveTo(sx, sy);
+                        ctx.quadraticCurveTo(cp.x, cp.y, ex, ey);
+                        ctx.strokeShape(shape);
+                    },
+                });
+            }
+            // Straight & elbow connectors render their stored points directly.
+            return new Konva.Line({
+                ...base,
+                x: el.x, y: el.y, rotation: el.rotation, points: l.points,
+                stroke: style.strokeColor, strokeWidth: style.strokeWidth, dash,
+                lineCap: 'round', lineJoin: 'round',
+            });
+        }
+        case 'arrow': {
+            const a = el as ArrowElement;
+            return new Konva.Arrow({
+                ...base,
+                x: el.x, y: el.y, rotation: el.rotation, points: a.points,
+                stroke: style.strokeColor, fill: style.strokeColor, strokeWidth: style.strokeWidth, dash,
+                lineCap: 'round', lineJoin: 'round',
+            });
+        }
+        case 'freedraw': {
+            const f = el as FreeDrawElement;
+            return new Konva.Line({
+                ...base,
+                x: el.x, y: el.y, rotation: el.rotation, points: f.points,
+                stroke: style.strokeColor, strokeWidth: style.strokeWidth,
+                lineCap: 'round', lineJoin: 'round', tension: 0.5,
+            });
+        }
+        default:
+            return null; // text → HTML overlay, image → no sync bitmap
+    }
+}
+
+/**
+ * Draw a detached Konva node into a 2D context by reading it back via
+ * `toCanvas()`. `offsetX/Y` shift the node's world position to the context's
+ * local origin: `0` for tiles (the context is already world-space) or the
+ * element's own `x/y` for the atlas (each element fills its own local slot).
+ * The context's current scale is read so the readback is rasterised at the
+ * right pixel density (crisp, not resampled).
+ */
+function drawRasterNode(
+    ctx: OffscreenCanvasRenderingContext2D,
+    node: Konva.Node,
+    offsetX: number,
+    offsetY: number,
+): void {
+    const rect = node.getClientRect({ skipShadow: true });
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const m = ctx.getTransform();
+    const pixelRatio = Math.max(Math.abs(m.a), Math.abs(m.d)) || 1;
+    const canvas = node.toCanvas({
+        x: rect.x, y: rect.y, width: rect.width, height: rect.height, pixelRatio,
+    });
+    ctx.drawImage(canvas, rect.x - offsetX, rect.y - offsetY, rect.width, rect.height);
+}
+
+/** WebGL atlas rasteriser — one element per slot, drawn at the slot's origin. */
+const konvaElementRasterFn: ElementRasterFn = (ctx, el) => {
+    const node = buildRasterNode(el);
+    if (node) drawRasterNode(ctx, node, el.x, el.y);
+};
+
+/** Tile rasteriser — many elements drawn into a world-space tile context. */
+const konvaTileDrawFn: TileDrawFn = (ctx, elements) => {
+    for (const el of elements) {
+        const node = buildRasterNode(el);
+        if (node) drawRasterNode(ctx, node, 0, 0);
+    }
+};
 
 // ─── Memoized Static Layer ───────────────────────────────────
 // Following Konva's recommended pattern for 20K nodes:
@@ -353,6 +506,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         workerConfig,
         customElementTypes,
         store: storeProp,
+        renderer,
+        rendererOptions,
     } = props;
 
     // ─── Store instance (multi-instance support) ─────────────
@@ -363,7 +518,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // instance apps work unchanged.
     const useCanvasStore = storeProp ?? _defaultCanvasStore;
 
-    const theme = { ...DEFAULT_THEME, ...themeProp };
+    // Memoize so a stable object identity is passed to memoized children
+    // (a fresh spread every render would defeat their React.memo).
+    const theme = useMemo(() => ({ ...DEFAULT_THEME, ...themeProp }), [themeProp]);
 
     // ─── Worker Configuration ─────────────────────────────────
     const workerConfigValue = useMemo(() => ({
@@ -378,6 +535,37 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 ? { url: workerConfig.exportWorkerUrl }
                 : undefined,
     }), [workerConfig]);
+
+    // ─── Per-instance elbow worker manager ────────────────────
+    // Each FlowCanvas owns ONE ElbowWorkerManager so connector routing only
+    // considers THIS canvas's obstacles, and unmounting one canvas never tears
+    // down another's worker. Constructed lazily during render (cheap — the
+    // actual Worker spins up on first route); recreated only if a StrictMode
+    // simulated unmount disposed it or the worker config changed. Disposed in
+    // the unmount cleanup below.
+    const elbowWorkerConfig = workerConfigValue.elbowWorkerConfig;
+    const elbowManagerRef = useRef<ElbowWorkerManager | null>(null);
+    const elbowManagerDisposedRef = useRef(false);
+    const elbowConfigKeyRef = useRef<string | null>(null);
+    const elbowConfigKey = JSON.stringify(elbowWorkerConfig ?? null);
+    if (
+        !elbowManagerRef.current ||
+        elbowManagerDisposedRef.current ||
+        elbowConfigKeyRef.current !== elbowConfigKey
+    ) {
+        elbowManagerRef.current?.dispose();
+        elbowManagerRef.current = new ElbowWorkerManager(elbowWorkerConfig);
+        elbowManagerDisposedRef.current = false;
+        elbowConfigKeyRef.current = elbowConfigKey;
+    }
+    const elbowWorkerManager = elbowManagerRef.current;
+
+    // Provider value carrying this instance's elbow manager to descendant
+    // shapes' `useElbowWorker` hooks. Stable identity unless config changes.
+    const workerConfigProviderValue = useMemo<WorkerConfigContextValue>(
+        () => ({ ...workerConfigValue, elbowWorkerManager }),
+        [workerConfigValue, elbowWorkerManager],
+    );
 
     // ─── Store ────────────────────────────────────────────────
     const store = useCanvasStore();
@@ -412,7 +600,10 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     const selectedIdsSet = useMemo(() => toSet(selectedIds), [selectedIds]);
 
     // ─── Collaboration (CRDT / Yjs) ──────────────────────────
-    const { peers, updateCursor: collabUpdateCursor } = useCollaboration(collaborationConfig ?? null);
+    // Pass the RESOLVED per-instance store so the op-CRDT sync + awareness
+    // mirror THIS canvas, never the module-level singleton, when a `store`
+    // prop is supplied. Falls back to the singleton automatically otherwise.
+    const { peers, updateCursor: collabUpdateCursor } = useCollaboration(collaborationConfig ?? null, useCanvasStore);
 
     const stageRef = useRef<Konva.Stage>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -751,9 +942,123 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         { batchSize: 500, threshold: 500, enabled: true },
     );
 
+    // ─── Accelerated renderers (EXPERIMENTAL, opt-in via `renderer`) ──────
+    // Strictly additive: when `renderer` is 'konva' (the default) every branch
+    // below is inert — the hooks run disabled and the existing Konva static
+    // layer renders unchanged (HARD RULE 1).
+    const rendererStrategy = renderer ?? 'konva';
+    const rendererElementThreshold = rendererOptions?.elementThreshold ?? DEFAULT_RENDERER_ELEMENT_THRESHOLD;
+
+    // The static set the accelerated layer draws: every element NOT on the
+    // Konva interactive / drawing layer. Selected, group-expanded, bound, and
+    // in-progress elements stay on Konva (HARD RULE 2). Un-culled on purpose so
+    // each engine applies its own viewport/GPU culling over the full set.
+    const acceleratedStaticElements = useMemo(() => {
+        if (rendererStrategy === 'konva') return EMPTY_ELEMENTS;
+        const interactiveIds = new Set<string>();
+        for (const el of interactiveElements) interactiveIds.add(el.id);
+        if (drawingElementId) interactiveIds.add(drawingElementId);
+        const out: CanvasElementType[] = [];
+        for (const el of resolvedElements) {
+            if (!interactiveIds.has(el.id)) out.push(el);
+        }
+        return out;
+    }, [rendererStrategy, resolvedElements, interactiveElements, drawingElementId]);
+
+    // ── Tile spatial-index bridge ────────────────────────────
+    // The tile engine wants O(log n) per-tile lookups. useSpatialIndex's SoA is
+    // private (frozen file), so we maintain an instance-local SoA over the SAME
+    // static set and adapt it to the engine's TileSpatialQuery. It rebuilds
+    // lazily the first time the query runs after the element set changes, so the
+    // index is always current within the render that consumes it (no stale tile).
+    const tileSoaRef = useRef<SpatialSoA | null>(null);
+    const tileSyncedRef = useRef<CanvasElementType[] | null>(null);
+    const tileElementMapRef = useRef<Map<string, CanvasElementType>>(new Map());
+    const tileSpatialQuery = useMemo<TileSpatialQuery | undefined>(() => {
+        if (rendererStrategy !== 'tiled') return undefined;
+        const els = acceleratedStaticElements;
+        return (aabb: AABB) => {
+            const soa = tileSoaRef.current ?? (tileSoaRef.current = new SpatialSoA());
+            if (tileSyncedRef.current !== els) {
+                soa.rebuild(els);
+                const map = new Map<string, CanvasElementType>();
+                for (const el of els) map.set(el.id, el);
+                tileElementMapRef.current = map;
+                tileSyncedRef.current = els;
+            }
+            const ids = soa.queryRect(aabb.minX, aabb.minY, aabb.maxX, aabb.maxY);
+            const map = tileElementMapRef.current;
+            const result: CanvasElementType[] = [];
+            for (const id of ids) {
+                const el = map.get(id);
+                if (el) result.push(el);
+            }
+            return result;
+        };
+    }, [rendererStrategy, acceleratedStaticElements]);
+
+    // ── WebGL hybrid engine ──────────────────────────────────
+    // Fed the FULL element set + selectedIds; the renderer filters selected
+    // internally, so the threshold tracks total count and selection never
+    // double-draws. `webglAvailable` is true only once a WebGL2 context inits —
+    // missing WebGL2 keeps it false and the decision below falls back to Konva.
+    const {
+        webglCanvasRef,
+        isActive: webglAvailable,
+        invalidateElements: webglInvalidateElements,
+    } = useWebGLHybrid(resolvedElements, selectedIdsSet, viewport, dimensions, {
+        enabled: rendererStrategy === 'webgl-hybrid',
+        rasterFn: konvaElementRasterFn,
+        elementThreshold: rendererElementThreshold,
+    });
+
+    // ── Tile engine ──────────────────────────────────────────
+    const { isActive: tileActive, tiles: renderedTiles } = useTileRenderer(
+        acceleratedStaticElements,
+        viewport,
+        dimensions.width,
+        dimensions.height,
+        {
+            enabled: rendererStrategy === 'tiled',
+            maxCachedTiles: rendererOptions?.maxCachedTiles,
+            drawFn: konvaTileDrawFn,
+            elementThreshold: rendererElementThreshold,
+            spatialQuery: tileSpatialQuery,
+        },
+    );
+
+    // ── Strategy decision: accelerate or fall back to Konva static ──
+    const renderDecision = resolveRenderStrategy({
+        renderer,
+        staticElementCount:
+            rendererStrategy === 'tiled' ? acceleratedStaticElements.length : resolvedElements.length,
+        elementThreshold: rendererElementThreshold,
+        webglAvailable,
+        tileActive,
+    });
+
+    // ── WebGL atlas invalidation ─────────────────────────────
+    // The renderer re-rasterises on `version` bumps itself; this diff (the same
+    // visual signature the tile hook uses) catches the style / text / visibility
+    // edits that DON'T bump version, plus deletions. Undo / redo / import /
+    // setElements turn over identities & versions, so they surface here too —
+    // invalidating the precise changed∪removed set re-rasterises exactly them.
+    const webglSignaturesRef = useRef<Map<string, string>>(new Map());
+    useEffect(() => {
+        if (rendererStrategy !== 'webgl-hybrid') return;
+        const { changed, removed, next } = diffElements(webglSignaturesRef.current, resolvedElements);
+        webglSignaturesRef.current = next;
+        if (changed.length > 0 || removed.length > 0) {
+            const ids = removed.slice();
+            for (const el of changed) ids.push(el.id);
+            webglInvalidateElements(ids);
+        }
+    }, [rendererStrategy, resolvedElements, webglInvalidateElements]);
+
     // ─── Keyboard Shortcuts ────────────────────────────────────
-    // Always call the hook (Rules of Hooks) — pass enabled flag
-    useKeyboardShortcuts(enableShortcuts && !readOnly, containerRef);
+    // Always call the hook (Rules of Hooks) — pass the resolved per-instance
+    // store + enabled flag so shortcuts act on THIS canvas, not the singleton.
+    useKeyboardShortcuts(useCanvasStore, enableShortcuts && !readOnly, containerRef);
 
     // ─── Plugin registration: custom element types ────────────
     // Registered once on mount into the global singleton registry.
@@ -1077,6 +1382,10 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // Uses refs for mutable data to avoid re-creating on every render.
     const toolCtxRef = useRef<ToolContext>(null as any);
     toolCtxRef.current = {
+        // The resolved per-instance store — tools read transient state
+        // (pause/resume history, fresh elements, line-type defaults) through
+        // this so multiple FlowCanvas instances never share the singleton.
+        store: useCanvasStore,
         elements,
         selectedIds,
         activeTool,
@@ -1112,6 +1421,48 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         onElementCreate,
         onElementDelete,
     };
+
+    // ─── Tool lifecycle: deactivate the outgoing tool on a tool switch ──
+    // Every active-tool change (keyboard shortcut, toolbar, Escape, the
+    // imperative handle, or a tool committing back to 'select') flows through
+    // the store's activeTool. When it changes, run the OUTGOING tool's
+    // deactivate() so any in-flight gesture is finalized/aborted: paused history
+    // is resumed and module-level gesture state is reset. Without this,
+    // switching mid-draw would strand resumeHistory() (killing undo/redo for the
+    // whole session) and leak gesture state.
+    const prevToolRef = useRef<ToolType>(activeTool);
+    useEffect(() => {
+        const prevTool = prevToolRef.current;
+        prevToolRef.current = activeTool;
+        if (prevTool === activeTool) return;
+        // deactivate is idempotent — a no-op when the outgoing tool already
+        // finished (e.g. a normal onMouseUp that committed back to 'select').
+        getToolHandler(prevTool)?.deactivate?.(toolCtxRef.current);
+    }, [activeTool]);
+
+    // ─── Tool lifecycle: deactivate on release/cancel OUTSIDE the Stage ──
+    // When the pointer is released (pointerup) or the gesture is cancelled
+    // (pointercancel) outside the Konva stage — including over the toolbar/style
+    // panel — the Stage's onMouseUp never fires, so the active tool would never
+    // end its gesture, stranding paused history and gesture state. Funnel these
+    // through the tool's deactivate(), which is idempotent and self-guards when
+    // no gesture exists. Releases INSIDE the stage are skipped here because the
+    // Stage onMouseUp already handles them — this is the guard against
+    // double-finalizing an already-handled gesture.
+    useEffect(() => {
+        const finalizeOutsideStage = (e: PointerEvent) => {
+            const stageContainer = stageRef.current?.container();
+            if (stageContainer && e.target instanceof Node && stageContainer.contains(e.target)) return;
+            const ctx = toolCtxRef.current;
+            getToolHandler(ctx.activeTool)?.deactivate?.(ctx);
+        };
+        window.addEventListener('pointerup', finalizeOutsideStage);
+        window.addEventListener('pointercancel', finalizeOutsideStage);
+        return () => {
+            window.removeEventListener('pointerup', finalizeOutsideStage);
+            window.removeEventListener('pointercancel', finalizeOutsideStage);
+        };
+    }, []);
 
     // ─── Mouse Down ───────────────────────────────────────────
     const handleMouseDown = useCallback(
@@ -1218,7 +1569,11 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     useEffect(() => {
         return () => {
             throttledMouseMoveRef.current?.cancel?.();
-            disposeElbowWorkerManager();
+            // Dispose only THIS instance's elbow worker — never a shared global
+            // one. Other FlowCanvas instances keep their own managers alive.
+            // Idempotent: marking disposed lets a StrictMode remount recreate it.
+            elbowManagerRef.current?.dispose();
+            elbowManagerDisposedRef.current = true;
             disposeExportWorkerManager();
         };
     }, []);
@@ -1353,8 +1708,54 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     const dragFlushScheduledRef = useRef(false);
     /** Track whether we're in a multi-drag that skips store updates */
     const isMultiDragSkippingRef = useRef(false);
-    /** Track whether Konva.pixelRatio has been reduced during drag */
+    /** This stage's saved pixel ratio while it is reduced during a drag */
     const savedPixelRatioRef = useRef<number | null>(null);
+
+    // ─── Per-stage pixelRatio (drag performance) ──────────────
+    // Reducing the pixel ratio during drag cuts draw cost ~50% on Retina.
+    // We scope this to THIS instance's stage layers (never the global
+    // `Konva.pixelRatio`) so two simultaneous drags on different canvases
+    // can't race, and an interrupted drag/unmount can't strand the global
+    // default at low-res.
+    const setStagePixelRatio = useCallback((ratio: number) => {
+        const stage = stageRef.current;
+        if (!stage) return;
+        stage.getLayers().forEach((layer) => {
+            layer.getCanvas().setPixelRatio(ratio);
+        });
+        stage.batchDraw();
+    }, []);
+
+    /** Reduce this stage's pixel ratio for the duration of a drag. Idempotent. */
+    const beginDragPixelRatio = useCallback(() => {
+        if (savedPixelRatioRef.current !== null) return;
+        const firstLayer = stageRef.current?.getLayers()[0];
+        savedPixelRatioRef.current = firstLayer
+            ? firstLayer.getCanvas().getPixelRatio()
+            : Konva.pixelRatio;
+        setStagePixelRatio(1);
+    }, [setStagePixelRatio]);
+
+    /** Restore this stage's pixel ratio after a drag ends OR is interrupted. Idempotent. */
+    const restoreDragPixelRatio = useCallback(() => {
+        if (savedPixelRatioRef.current === null) return;
+        setStagePixelRatio(savedPixelRatioRef.current);
+        savedPixelRatioRef.current = null;
+    }, [setStagePixelRatio]);
+
+    // Crash-safety: dragEnd normally restores the ratio, but if a drag is
+    // interrupted (pointer released/cancelled outside the stage, or the
+    // component unmounts mid-drag) restore it here too. Idempotent — a no-op
+    // when no drag reduced it.
+    useEffect(() => {
+        window.addEventListener('pointerup', restoreDragPixelRatio);
+        window.addEventListener('pointercancel', restoreDragPixelRatio);
+        return () => {
+            window.removeEventListener('pointerup', restoreDragPixelRatio);
+            window.removeEventListener('pointercancel', restoreDragPixelRatio);
+            restoreDragPixelRatio();
+        };
+    }, [restoreDragPixelRatio]);
 
     const flushDragBatch = useCallback(() => {
         dragFlushScheduledRef.current = false;
@@ -1402,13 +1803,11 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         (id: string, updates: Partial<CanvasElementType>) => {
             if (readOnly) return;
 
-            // ─── Reduce pixelRatio during drag ────────────────
+            // ─── Reduce this stage's pixelRatio during drag ───
             // Cuts draw cost ~50% on Retina displays (4× fewer pixels).
-            // Restored on dragEnd in handleElementChange / flushDragEndBatch.
-            if (savedPixelRatioRef.current === null) {
-                savedPixelRatioRef.current = Konva.pixelRatio;
-                Konva.pixelRatio = 1;
-            }
+            // Restored on dragEnd in handleElementChange / flushDragEndBatch,
+            // and on pointerup/cancel/unmount as a crash-safety net.
+            beginDragPixelRatio();
 
             const { elements, selectedIds } = useCanvasStore.getState();
 
@@ -1558,11 +1957,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         useCanvasStore.getState().pushHistory();
 
         // Restore full pixelRatio after drag completes
-        if (savedPixelRatioRef.current !== null) {
-            Konva.pixelRatio = savedPixelRatioRef.current;
-            savedPixelRatioRef.current = null;
-        }
-    }, []);
+        restoreDragPixelRatio();
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleElementChange = useCallback(
         (id: string, updates: Partial<CanvasElementType>) => {
@@ -1621,12 +2017,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             pushHistory();
 
             // Restore full pixelRatio after drag completes
-            if (savedPixelRatioRef.current !== null) {
-                Konva.pixelRatio = savedPixelRatioRef.current;
-                savedPixelRatioRef.current = null;
-            }
+            restoreDragPixelRatio();
         },
-        [updateElement, pushHistory, readOnly, flushDragEndBatch]
+        [updateElement, pushHistory, readOnly, flushDragEndBatch, restoreDragPixelRatio]
     );
 
     // ─── Group drag end ─────────────────────────────────────────
@@ -2240,7 +2633,55 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             }
         },
         getStage: () => stageRef.current,
-    }));
+        // Deps: the closed-over store actions (stable Zustand refs) plus
+        // `useCanvasStore` itself, which only changes if the `store` prop does —
+        // most reads go through getState(), and refs are stable. This avoids
+        // rebuilding the imperative handle on every render.
+    }), [useCanvasStore, setElements, addElement, deleteElements, setSelectedIds, clearSelection, setActiveTool, undo, redo, setViewport, pushHistory]);
+
+    // ─── Hover cursor ─────────────────────────────────────────
+    // Drive the Konva container's cursor imperatively so it reflects what's
+    // under the pointer WITHOUT forcing React re-renders (Konva owns that DOM
+    // node, so React never fights these writes):
+    //   • select → 'move' over a shape, 'default' over empty canvas
+    //   • hand / space-pan → 'grab', switching to 'grabbing' while panning
+    // Transformer anchors keep their own resize/rotate cursors. For drawing
+    // tools the container cursor is cleared so the base getCursor() shows through.
+    useEffect(() => {
+        const stage = stageRef.current;
+        if (!stage) return;
+        const container = stage.container();
+        const clear = () => { container.style.cursor = ''; };
+
+        if (readOnly) { clear(); return; }
+
+        if (activeTool === 'hand' || isSpacePanning) {
+            const grab = () => { container.style.cursor = 'grab'; };
+            const grabbing = () => { container.style.cursor = 'grabbing'; };
+            grab();
+            stage.on('dragstart.hovercur', grabbing);
+            stage.on('dragend.hovercur', grab);
+            return () => { stage.off('.hovercur'); clear(); };
+        }
+
+        if (activeTool === 'select') {
+            container.style.cursor = 'default';
+            const onMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+                const t = e.target;
+                // Skip Transformer anchors/border so their resize/rotate cursors win.
+                const parent = t.getParent();
+                if (t !== stage && parent && parent.className === 'Transformer') return;
+                container.style.cursor = t && t !== stage ? 'move' : 'default';
+            };
+            stage.on('mousemove.hovercur', onMove);
+            return () => { stage.off('.hovercur'); clear(); };
+        }
+
+        // Drawing tools (rectangle/ellipse/line/text/eraser/…): let the base
+        // getCursor() crosshair/text cursor show through the cleared container.
+        clear();
+        return () => { stage.off('.hovercur'); clear(); };
+    }, [activeTool, isSpacePanning, readOnly]);
 
     // ─── Cursor ───────────────────────────────────────────────
     const getCursor = (): string => {
@@ -2277,7 +2718,7 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // ─── Render ───────────────────────────────────────────────
     return (
         <CanvasStoreProvider store={useCanvasStore}>
-        <WorkerConfigContext.Provider value={workerConfigValue}>
+        <WorkerConfigContext.Provider value={workerConfigProviderValue}>
             <div
                 ref={containerRef}
                 className={className}
@@ -2301,6 +2742,24 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
 
             {/* Canvas */}
             <div style={{ cursor: getCursor(), position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+                {/* EXPERIMENTAL: WebGL hybrid static layer — a transparent canvas
+                    BEHIND the Konva Stage. Mounted only for the 'webgl-hybrid'
+                    strategy; renders nothing until a WebGL2 context initialises
+                    and the element threshold is met (otherwise the Konva static
+                    layer below still draws). */}
+                {rendererStrategy === 'webgl-hybrid' && (
+                    <canvas
+                        ref={webglCanvasRef}
+                        style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            height: '100%',
+                            pointerEvents: 'none',
+                        }}
+                    />
+                )}
                 <Stage
                     ref={stageRef}
                     width={dimensions.width}
@@ -2331,25 +2790,51 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                         </Layer>
                     )}
 
+                    {/* EXPERIMENTAL: tiled static layer — cached tile bitmaps as
+                        Konva images, in place of the Konva static layer. Rendered
+                        only when the 'tiled' engine is active; otherwise the Konva
+                        static layer below draws (fallback). Non-listening: selected
+                        elements live on the interactive layer (HARD RULE 2). */}
+                    {renderDecision.strategy === 'tiled' && renderDecision.useAccelerated && (
+                        <Layer listening={false} hitGraphEnabled={false}>
+                            {renderedTiles.map((t) => (
+                                <KonvaImage
+                                    key={t.key}
+                                    image={t.bitmap as unknown as HTMLImageElement}
+                                    x={t.worldX}
+                                    y={t.worldY}
+                                    width={t.worldSize}
+                                    height={t.worldSize}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            ))}
+                        </Layer>
+                    )}
+
                     {/* Static Layer: non-selected elements — memoized wrapper skips
                         entire subtree when static content hasn't changed (e.g. during
-                        drag of selected element, context menu, selection box, etc.) */}
-                    <MemoizedStaticLayer
-                        elements={progressiveStaticElements}
-                        listening={elementsListening}
-                        onSelect={handleElementSelect}
-                        onChange={handleElementChange}
-                        onDragMove={handleElementDragMove}
-                        onDoubleClick={handleElementDoubleClick}
-                        autoEditTextId={autoEditTextId}
-                        onTextEditStart={handleTextEditStart}
-                        onTextEditEnd={handleTextEditEnd}
-                        allElements={resolvedElements}
-                        gridSnap={showGrid ? GRID_SIZE : undefined}
-                        onDragSnap={!showGrid ? handleDragSnap : undefined}
-                        viewportScale={viewport.scale}
-                        onGroupDragEnd={handleGroupDragEnd}
-                    />
+                        drag of selected element, context menu, selection box, etc.).
+                        On the default 'konva' strategy `useKonvaStatic` is always true,
+                        so this renders exactly as before. */}
+                    {renderDecision.useKonvaStatic && (
+                        <MemoizedStaticLayer
+                            elements={progressiveStaticElements}
+                            listening={elementsListening}
+                            onSelect={handleElementSelect}
+                            onChange={handleElementChange}
+                            onDragMove={handleElementDragMove}
+                            onDoubleClick={handleElementDoubleClick}
+                            autoEditTextId={autoEditTextId}
+                            onTextEditStart={handleTextEditStart}
+                            onTextEditEnd={handleTextEditEnd}
+                            allElements={resolvedElements}
+                            gridSnap={showGrid ? GRID_SIZE : undefined}
+                            onDragSnap={!showGrid ? handleDragSnap : undefined}
+                            viewportScale={viewport.scale}
+                            onGroupDragEnd={handleGroupDragEnd}
+                        />
+                    )}
 
                     {/* Interactive Layer: selected elements + transformer + linear handles */}
                     <Layer listening={elementsListening}>

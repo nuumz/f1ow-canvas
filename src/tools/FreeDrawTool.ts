@@ -6,7 +6,6 @@ import type { ToolHandler, ToolContext } from './BaseTool';
 import type Konva from 'konva';
 import type { Point, CanvasElement, FreeDrawElement } from '@/types';
 import { generateId } from '@/utils/id';
-import { useCanvasStore } from '@/store/useCanvasStore';
 import { computeFreedrawBBox } from '@/utils/freehand';
 
 /** Minimum squared distance (canvas pixels) between recorded points.
@@ -49,7 +48,7 @@ export const freeDrawTool: ToolHandler = {
             version: 0,
         };
         // Pause before addElement so no intermediate snapshot is recorded.
-        useCanvasStore.getState().pauseHistory();
+        ctx.store.getState().pauseHistory();
         ctx.addElement(el);
         ctx.onElementCreate?.(el);
     },
@@ -109,12 +108,39 @@ export const freeDrawTool: ToolHandler = {
                 });
             }
             // Resume then push one atomic entry for the entire stroke.
-            useCanvasStore.getState().resumeHistory();
+            ctx.store.getState().resumeHistory();
             ctx.pushHistory();
         }
         ctx.setIsDrawing(false);
         ctx.setDrawStart(null);
         ctx.currentElementIdRef.current = null;
+    },
+
+    deactivate(ctx: ToolContext) {
+        const id = ctx.currentElementIdRef.current;
+        if (!id) return; // no in-flight stroke
+        // Always resume to balance the pauseHistory() from onMouseDown.
+        ctx.store.getState().resumeHistory();
+        const el = ctx.elements.find((e) => e.id === id) as FreeDrawElement | undefined;
+        if (el && el.points.length > 2) {
+            // At least one move beyond the start point — finalize the stroke.
+            const { minX, minY, width, height } = computeFreedrawBBox(el.points);
+            ctx.updateElement(el.id, {
+                x: minX,
+                y: minY,
+                width,
+                height,
+                points: el.points.map((v, i) => (i % 2 === 0 ? v - minX : v - minY)),
+                isComplete: true,
+            });
+            ctx.pushHistory();
+        } else {
+            // Just the initial point (no drag) — discard.
+            ctx.deleteElements([id]);
+        }
+        ctx.currentElementIdRef.current = null;
+        ctx.setIsDrawing(false);
+        ctx.setDrawStart(null);
     },
 
     getCursor() {

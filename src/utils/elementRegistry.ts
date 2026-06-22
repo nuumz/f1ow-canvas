@@ -237,10 +237,21 @@ class ElementRegistryClass {
     /**
      * Validate a partial update before it is applied to an existing element.
      *
-     * Prevents overwriting immutable fields (`id` and `type`), and checks
-     * numeric fields for finiteness.
+     * Prevents overwriting immutable fields (`id` and `type`). When the
+     * `current` element is supplied, the update is validated *in context* by
+     * running the full element validator against the merged result — so
+     * type-specific and nested-style rules apply to partial updates too
+     * (e.g. negative `cornerRadius`, `opacity > 1`, invalid `lineType`).
+     * The merge inherits the already-valid base fields from `current`, so this
+     * only rejects values that `validateElement` would also reject.
+     *
+     * Without `current` (no element context) it falls back to standalone
+     * numeric-finiteness checks on the moved geometry fields.
      */
-    validateUpdate(updates: Record<string, unknown>): ValidationResult {
+    validateUpdate(
+        updates: Record<string, unknown>,
+        current?: Record<string, unknown>,
+    ): ValidationResult {
         if ('id' in updates) {
             return { valid: false, error: 'Cannot overwrite element id via updateElement' };
         }
@@ -250,6 +261,11 @@ class ElementRegistryClass {
                 error: 'Cannot overwrite element type via updateElement — use convertElementType instead',
             };
         }
+
+        if (current) {
+            return this.validateElement({ ...current, ...updates });
+        }
+
         for (const key of ['x', 'y', 'width', 'height', 'rotation'] as const) {
             if (key in updates) {
                 const v = updates[key];

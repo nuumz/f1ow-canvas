@@ -95,4 +95,11 @@ export const selectTool: ToolHandler = {
         ctx.setIsDrawing(false);
         ctx.setDrawStart(null);
     },
+
+    deactivate(ctx: ToolContext) {
+        // Commit (and clear) any in-progress rubber-band selection. onMouseUp
+        // self-guards on isDrawing, so this is a no-op when nothing is active.
+        // Select never pauses history, so there is nothing else to balance.
+        this.onMouseUp(ctx);
+    },
 };

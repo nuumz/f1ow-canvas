@@ -80,7 +80,14 @@ export function createBuffer(
 }
 
 /**
- * Upload a 2D texture from an ImageBitmap or OffscreenCanvas.
+ * Upload (allocate) a full 2D texture from an ImageBitmap or OffscreenCanvas.
+ *
+ * The source is a straight-alpha 2D canvas, but the renderer composites with
+ * premultiplied-alpha blending (`ONE, ONE_MINUS_SRC_ALPHA`) on a
+ * `premultipliedAlpha: true` context. We therefore ask WebGL to premultiply
+ * on upload (`UNPACK_PREMULTIPLY_ALPHA_WEBGL`) so the whole pipeline is
+ * premultiplied end-to-end — otherwise edges of transparent shapes get dark
+ * fringes / over-bright halos.
  */
 export function uploadTexture(
     gl: WebGL2RenderingContext,
@@ -94,8 +101,42 @@ export function uploadTexture(
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     return tex;
+}
+
+/**
+ * Upload only a sub-rectangle of `source` into an already-allocated texture
+ * via `texSubImage2D`, avoiding a full reallocation of the (potentially
+ * ~64 MB) atlas every frame.
+ *
+ * WebGL2 honours the integer unpack pixel-store params even for
+ * TexImageSource uploads, so `UNPACK_ROW_LENGTH/SKIP_PIXELS/SKIP_ROWS` are
+ * used to select the dirty sub-rect out of the full-size source canvas.
+ * Premultiply is applied to stay consistent with {@link uploadTexture}.
+ */
+export function uploadTextureSubRect(
+    gl: WebGL2RenderingContext,
+    texture: WebGLTexture,
+    source: ImageBitmap | OffscreenCanvas | HTMLCanvasElement,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    sourceWidth: number,
+): void {
+    if (width <= 0 || height <= 0) return;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, sourceWidth);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    // Reset so later uploads aren't affected by this sub-rect selection.
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
 }
 
 /**

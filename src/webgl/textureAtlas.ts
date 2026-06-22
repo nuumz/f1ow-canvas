@@ -34,6 +34,25 @@ export interface AtlasEntry {
     region: AtlasRegion;
     /** Generation when element was last rasterised */
     generation: number;
+    /**
+     * The element that produced this entry. Retained so the atlas can
+     * re-rasterise it during compaction/rebuild without external help.
+     */
+    element: CanvasElement;
+}
+
+/**
+ * Sub-region of the atlas that changed since the last upload.
+ * `full` means the whole atlas changed (texture must be reallocated /
+ * uploaded with `texImage2D`); otherwise only `(x, y, width, height)`
+ * pixels changed and can be streamed with `texSubImage2D`.
+ */
+export interface DirtyRegion {
+    full: boolean;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────
@@ -57,6 +76,16 @@ const MIN_ELEMENT_SIZE = 16;
  * Padding between atlas entries to avoid texture bleeding.
  */
 const ATLAS_PADDING = 2;
+
+/**
+ * Fragmentation threshold (fraction of the total atlas area that is dead
+ * space) above which the atlas is proactively compacted. Shelf packing
+ * never reuses the space left behind by removed/superseded entries, so
+ * without compaction a busy canvas would slowly fill the atlas until
+ * `pack()` returns null and elements get stranded.
+ */
+const COMPACT_FRAGMENTATION_THRESHOLD = 0.3;
+const ATLAS_AREA = ATLAS_SIZE * ATLAS_SIZE;
 
 // ─── Shelf Packer ─────────────────────────────────────────────
 
@@ -132,8 +161,16 @@ export class TextureAtlas {
     private _canvas: OffscreenCanvas;
     private _ctx: OffscreenCanvasRenderingContext2D;
     private _drawFn: ElementRasterFn;
-    private _dirty = false;
     private _generation = 0;
+    /** Pixel area left behind by removed/superseded entries (reclaimable). */
+    private _freedArea = 0;
+    // ── Dirty-region tracking (drives texSubImage2D upload) ──
+    private _dirty = false;
+    private _needsFullUpload = false;
+    private _dirtyMinX = ATLAS_SIZE;
+    private _dirtyMinY = ATLAS_SIZE;
+    private _dirtyMaxX = 0;
+    private _dirtyMaxY = 0;
 
     constructor(drawFn?: ElementRasterFn) {
         this._packer = new ShelfPacker(ATLAS_SIZE, ATLAS_SIZE);
@@ -144,7 +181,16 @@ export class TextureAtlas {
 
     /**
      * Ensure an element has an up-to-date atlas entry.
-     * Rasterises only if the element is new or its generation is stale.
+     *
+     * The caller is responsible for only invoking this when the element is
+     * new or its content actually changed — the `generation` is bumped per
+     * change (never per frame), so a stale generation forces a re-raster
+     * into a fresh slot and the old slot becomes reclaimable dead space.
+     *
+     * Reclamation: when fragmentation crosses the threshold (or `pack()`
+     * fails outright) the atlas compacts itself by re-packing only the live
+     * entries, guaranteeing an element is never silently dropped while space
+     * still exists for it.
      */
     addOrUpdate(element: CanvasElement, generation: number): AtlasRegion | null {
         const existing = this._entries.get(element.id);
@@ -152,14 +198,116 @@ export class TextureAtlas {
             return existing.region;
         }
 
-        // Compute pixel dimensions
+        // Updating an existing entry: its old slot becomes dead space.
+        if (existing) {
+            this._freedArea += existing.region.pixelWidth * existing.region.pixelHeight;
+            this._entries.delete(element.id);
+        }
+
+        // Proactively compact when too much of the atlas is dead space.
+        if (this._freedArea / ATLAS_AREA >= COMPACT_FRAGMENTATION_THRESHOLD) {
+            this._repackLiveEntries();
+        }
+
+        let region = this._rasteriseAndStore(element, generation);
+        if (!region) {
+            // Atlas reported full — compact live entries and retry once.
+            this._repackLiveEntries();
+            region = this._rasteriseAndStore(element, generation);
+        }
+        return region;
+    }
+
+    /** Get atlas region for an element. */
+    getRegion(elementId: string): AtlasRegion | null {
+        return this._entries.get(elementId)?.region ?? null;
+    }
+
+    /**
+     * Remove an element from tracking. The pixels it occupied are left in
+     * place (harmless — no quad samples them) and the area is marked
+     * reclaimable, to be reclaimed on the next compaction/rebuild.
+     */
+    remove(elementId: string): void {
+        const entry = this._entries.get(elementId);
+        if (!entry) return;
+        this._freedArea += entry.region.pixelWidth * entry.region.pixelHeight;
+        this._entries.delete(elementId);
+    }
+
+    /** Full rebuild — clears atlas and re-rasterises all provided elements. */
+    rebuild(elements: CanvasElement[]): void {
+        this._generation++;
+        this._packer.reset();
+        this._entries.clear();
+        this._freedArea = 0;
+        this._ctx.clearRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
+        for (const el of elements) {
+            this._rasteriseAndStore(el, this._generation);
+        }
+        this._markFullDirty();
+    }
+
+    /** Whether the atlas canvas has changed since the last `consumeDirty()`. */
+    get isDirty(): boolean {
+        return this._dirty;
+    }
+
+    /**
+     * Return the region that changed since the last call and clear the dirty
+     * state. Lets the renderer upload only the changed sub-rect via
+     * `texSubImage2D` instead of re-uploading the whole 64 MB atlas.
+     */
+    consumeDirty(): DirtyRegion | null {
+        if (!this._dirty) return null;
+        const region: DirtyRegion = this._needsFullUpload
+            ? { full: true, x: 0, y: 0, width: ATLAS_SIZE, height: ATLAS_SIZE }
+            : {
+                full: false,
+                x: this._dirtyMinX,
+                y: this._dirtyMinY,
+                width: this._dirtyMaxX - this._dirtyMinX,
+                height: this._dirtyMaxY - this._dirtyMinY,
+            };
+        this._resetDirty();
+        return region;
+    }
+
+    /** Get the atlas OffscreenCanvas for uploading to a WebGL texture. */
+    getCanvas(): OffscreenCanvas {
+        return this._canvas;
+    }
+
+    /** Current generation counter. */
+    get generation(): number {
+        return this._generation;
+    }
+
+    /** Number of entries in the atlas. */
+    get size(): number {
+        return this._entries.size;
+    }
+
+    /** Fraction of the atlas that is currently dead space (0..1). */
+    get fragmentation(): number {
+        return this._freedArea / ATLAS_AREA;
+    }
+
+    dispose(): void {
+        this._entries.clear();
+        this._freedArea = 0;
+        this._resetDirty();
+    }
+
+    // ── Private ───────────────────────────────────────────────
+
+    /** Pack + draw + store one element. Returns null only if it cannot fit. */
+    private _rasteriseAndStore(element: CanvasElement, generation: number): AtlasRegion | null {
         const { pw, ph } = elementPixelDims(element);
 
-        // Pack into atlas
         const pos = this._packer.pack(pw, ph);
-        if (!pos) return null; // atlas full
+        if (!pos) return null;
 
-        // Rasterise element at the packed position
         this._ctx.save();
         this._ctx.clearRect(pos.x, pos.y, pw, ph);
         this._ctx.translate(pos.x, pos.y);
@@ -184,57 +332,49 @@ export class TextureAtlas {
             elementId: element.id,
             region,
             generation,
+            element,
         });
-        this._dirty = true;
-
+        this._markDirty(pos.x, pos.y, pw, ph);
         return region;
     }
 
-    /** Get atlas region for an element. */
-    getRegion(elementId: string): AtlasRegion | null {
-        return this._entries.get(elementId)?.region ?? null;
-    }
-
-    /** Remove an element from tracking (does not reclaim atlas space). */
-    remove(elementId: string): void {
-        this._entries.delete(elementId);
-    }
-
-    /** Full rebuild — clears atlas and re-rasterises all provided elements. */
-    rebuild(elements: CanvasElement[]): void {
-        this._generation++;
+    /** Re-pack only the live entries into a fresh atlas, reclaiming dead space. */
+    private _repackLiveEntries(): void {
+        const survivors = [...this._entries.values()];
         this._packer.reset();
         this._entries.clear();
+        this._freedArea = 0;
         this._ctx.clearRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
-        for (const el of elements) {
-            this.addOrUpdate(el, this._generation);
+        for (const entry of survivors) {
+            this._rasteriseAndStore(entry.element, entry.generation);
         }
+        this._markFullDirty();
+    }
+
+    private _markDirty(x: number, y: number, w: number, h: number): void {
         this._dirty = true;
+        if (x < this._dirtyMinX) this._dirtyMinX = x;
+        if (y < this._dirtyMinY) this._dirtyMinY = y;
+        if (x + w > this._dirtyMaxX) this._dirtyMaxX = x + w;
+        if (y + h > this._dirtyMaxY) this._dirtyMaxY = y + h;
     }
 
-    /** Whether the atlas canvas has changed since the last `getCanvas()` call. */
-    get isDirty(): boolean {
-        return this._dirty;
+    private _markFullDirty(): void {
+        this._dirty = true;
+        this._needsFullUpload = true;
+        this._dirtyMinX = 0;
+        this._dirtyMinY = 0;
+        this._dirtyMaxX = ATLAS_SIZE;
+        this._dirtyMaxY = ATLAS_SIZE;
     }
 
-    /** Get the atlas OffscreenCanvas for uploading to WebGL texture. */
-    getCanvas(): OffscreenCanvas {
+    private _resetDirty(): void {
         this._dirty = false;
-        return this._canvas;
-    }
-
-    /** Current generation counter. */
-    get generation(): number {
-        return this._generation;
-    }
-
-    /** Number of entries in the atlas. */
-    get size(): number {
-        return this._entries.size;
-    }
-
-    dispose(): void {
-        this._entries.clear();
+        this._needsFullUpload = false;
+        this._dirtyMinX = ATLAS_SIZE;
+        this._dirtyMinY = ATLAS_SIZE;
+        this._dirtyMaxX = 0;
+        this._dirtyMaxY = 0;
     }
 }
 

@@ -19,6 +19,12 @@ export interface CollaborationUser {
 
 /** Remote user's awareness state (cursor + selection) */
 export interface AwarenessState {
+    /**
+     * Yjs awareness clientID — unique per browser tab/connection.
+     * Surfaced for stable React keys so the same user in two tabs does not
+     * collide on `user.id`. Set when peers are assembled in useCollaboration.
+     */
+    clientID?: number;
     user: CollaborationUser;
     /** World-space cursor position (null = cursor outside canvas) */
     cursor: { x: number; y: number } | null;

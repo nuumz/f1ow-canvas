@@ -134,7 +134,7 @@ const CursorOverlay: React.FC<CursorOverlayProps> = ({
                 const { user } = peer;
 
                 return (
-                    <Group key={user.id}>
+                    <Group key={peer.clientID ?? user.id}>
                         {/* Selection highlights (support rotation) */}
                         {peer.selectedIds.map((selId) => {
                             const el = elementMap.get(selId);

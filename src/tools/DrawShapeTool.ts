@@ -8,7 +8,6 @@ import type Konva from 'konva';
 import type { Point, CanvasElement } from '@/types';
 import { normalizeRect, normalizeSymmetricRect } from '@/utils/geometry';
 import { generateId } from '@/utils/id';
-import { useCanvasStore } from '@/store/useCanvasStore';
 
 export const drawShapeTool: ToolHandler = {
     name: 'rectangle', // also handles ellipse and diamond
@@ -39,7 +38,7 @@ export const drawShapeTool: ToolHandler = {
             ? { ...baseShape, type: 'rectangle', cornerRadius: 0 }
             : baseShape as CanvasElement;
         // Pause before addElement so no intermediate snapshot is recorded.
-        useCanvasStore.getState().pauseHistory();
+        ctx.store.getState().pauseHistory();
         ctx.addElement(el);
         ctx.onElementCreate?.(el);
     },
@@ -55,7 +54,7 @@ export const drawShapeTool: ToolHandler = {
 
     onMouseUp(ctx: ToolContext) {
         // Resume before pushHistory so the entire draw is one atomic undo entry.
-        useCanvasStore.getState().resumeHistory();
+        ctx.store.getState().resumeHistory();
         if (ctx.currentElementIdRef.current) {
             ctx.setSelectedIds([ctx.currentElementIdRef.current]);
             ctx.pushHistory();
@@ -64,6 +63,25 @@ export const drawShapeTool: ToolHandler = {
         ctx.setDrawStart(null);
         ctx.currentElementIdRef.current = null;
         ctx.commitTool();
+    },
+
+    deactivate(ctx: ToolContext) {
+        const id = ctx.currentElementIdRef.current;
+        if (!id) return; // no in-flight draw
+        // Always resume to balance the pauseHistory() from onMouseDown.
+        ctx.store.getState().resumeHistory();
+        const el = ctx.elements.find((e) => e.id === id);
+        if (el && el.width > 1 && el.height > 1) {
+            // A real shape was dragged out — finalize as one atomic undo entry.
+            ctx.setSelectedIds([id]);
+            ctx.pushHistory();
+        } else {
+            // Bare mousedown with no (or degenerate) drag — discard.
+            ctx.deleteElements([id]);
+        }
+        ctx.currentElementIdRef.current = null;
+        ctx.setIsDrawing(false);
+        ctx.setDrawStart(null);
     },
 
     getCursor() {

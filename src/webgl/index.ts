@@ -12,15 +12,16 @@ export {
     createProgram,
     createBuffer,
     uploadTexture,
+    uploadTextureSubRect,
     buildViewMatrix,
 } from './glUtils';
 
 // Texture atlas
 export { TextureAtlas } from './textureAtlas';
-export type { AtlasRegion, AtlasEntry, ElementRasterFn } from './textureAtlas';
+export type { AtlasRegion, AtlasEntry, DirtyRegion, ElementRasterFn } from './textureAtlas';
 
 // WebGL hybrid renderer
-export { WebGLHybridRenderer } from './WebGLHybridRenderer';
+export { WebGLHybridRenderer, needsRaster, writeInstanceData, FLOATS_PER_INSTANCE } from './WebGLHybridRenderer';
 export type { WebGLHybridRendererOptions } from './WebGLHybridRenderer';
 
 // React hook

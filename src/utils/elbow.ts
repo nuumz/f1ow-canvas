@@ -101,8 +101,12 @@ const SHAPE_MARGIN = 20;
  * passable, but large enough to provide visual clearance on the
  * exit face. The antenna stub (MIN_STUB_LENGTH) must be > this
  * value so the antenna point lands outside the inflated area.
+ *
+ * NOTE: This MUST stay below SHAPE_MARGIN — otherwise
+ * `Math.min(margin, EXIT_FACE_MARGIN)` collapses to `margin` and the
+ * reduced exit-face clearance silently degrades to uniform inflation.
  */
-const EXIT_FACE_MARGIN = 25;
+const EXIT_FACE_MARGIN = 10;
 
 /**
  * Minimum length of the stub (antenna) segment at each end (px).
@@ -1029,6 +1033,41 @@ function routeInteriorClearance(path: Point[], obstacles: Array<{ x: number; y: 
     return best;
 }
 
+/**
+ * Whether an axis-aligned (orthogonal) segment passes through a rect.
+ * Used only for cheap direction-pair scoring — all elbow path segments
+ * are horizontal or vertical, so a bounding-box overlap test is exact.
+ * Boundary contact (strict inequality) does not count as intersection;
+ * obstacles are inflated by the caller to absorb that.
+ */
+function orthSegmentIntersectsRect(a: Point, b: Point, rect: Rect): boolean {
+    const segLeft = Math.min(a.x, b.x);
+    const segRight = Math.max(a.x, b.x);
+    const segTop = Math.min(a.y, b.y);
+    const segBottom = Math.max(a.y, b.y);
+    return segLeft < rectRight(rect) && rect.left < segRight &&
+           segTop < rectBottom(rect) && rect.top < segBottom;
+}
+
+/**
+ * Estimate the extra bends the real router would add to route a geometric
+ * candidate path AROUND intermediate obstacles it currently clips. Each
+ * clipped (segment, obstacle) pair costs ~2 bends (a detour adds two turns).
+ * Folding this into the bend count lets the cheap heuristic prefer a clean
+ * longer route over a short one that cuts through a blocker — matching the
+ * full router, whose primary criterion is also bend count.
+ */
+function obstacleCollisionBends(path: Point[], obstacleRects: Rect[]): number {
+    if (obstacleRects.length === 0 || path.length < 2) return 0;
+    let penalty = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+        for (const rect of obstacleRects) {
+            if (orthSegmentIntersectsRect(path[i], path[i + 1], rect)) penalty += 2;
+        }
+    }
+    return penalty;
+}
+
 function buildDirectionPairCandidates(
     startPref: ElbowDirectionPreference,
     endPref: ElbowDirectionPreference,
@@ -1117,22 +1156,34 @@ export function selectElbowDirectionPair(args: {
         ...intermediateObstacles,
     ];
 
+    // Score each candidate with a CHEAP geometric estimate instead of a
+    // full A* route. `fallbackRoute` produces the canonical L/S bend for
+    // a given direction pair in O(1); scoring it with the SAME metrics and
+    // comparator used for real routes (bends → short-segment penalty →
+    // clearance → length → preference) makes the chosen direction pair
+    // agree with the old full-routing choice in the common (open) case.
+    //
+    // Obstacle awareness is preserved by folding an estimated detour cost
+    // into the bend count: a geometric route that cuts through an
+    // intermediate obstacle would force the real router to add bends, so it
+    // loses the bend-primary comparison to a clean route. The winner is
+    // routed for real once by computeElbowRoute, so worst case is 1 full
+    // solve + cheap scoring (was up to ~8 full solves).
+    const stub = Math.max(MIN_STUB_LENGTH, minStubLength ?? 0);
+    // Inflate intermediate obstacles like the real router (SHAPE_MARGIN) so
+    // near-grazing routes are also treated as blocked.
+    const obstacleRects = intermediateObstacles.map(o =>
+        rectInflate(bboxToRect(o), SHAPE_MARGIN, SHAPE_MARGIN),
+    );
     let best: ScoredElbowRouteCandidate | null = null;
     for (const candidate of candidates) {
-        const path = computeElbowRoute(
-            startWorld,
-            endWorld,
-            candidate.startDir,
-            candidate.endDir,
-            startShape,
-            endShape,
-            minStubLength,
-            intermediateObstacles,
+        const path = simplifyPointPath(
+            fallbackRoute(startWorld, endWorld, candidate.startDir, candidate.endDir, stub),
         );
         const scored: ScoredElbowRouteCandidate = {
             ...candidate,
             path,
-            bends: countBends(path),
+            bends: countBends(path) + obstacleCollisionBends(path, obstacleRects),
             length: totalPathLength(path),
             shortSegmentPenalty: interiorShortSegmentPenalty(path),
             clearance: routeInteriorClearance(path, clearanceObstacles),
@@ -1554,8 +1605,8 @@ const routeCache = new Map<string, number[]>();
 function buildCacheKey(
     startWorld: Point,
     endWorld: Point,
-    startDir: Direction,
-    endDir: Direction,
+    startBinding: Binding | null,
+    endBinding: Binding | null,
     startBBox: BBox | null,
     endBBox: BBox | null,
     obstacleFingerprint: string,
@@ -1563,10 +1614,18 @@ function buildCacheKey(
 ): string {
     // Round to 0.5px to absorb floating-point jitter during drags
     const r = (v: number) => Math.round(v * 2) / 2;
+    // Key on the binding fields that determine exit/entry directions
+    // (isPrecise + fixedPoint). The selected directions are a pure function
+    // of these plus positions/bboxes/obstacles, so the key can be built
+    // BEFORE direction selection and a hit short-circuits both selection
+    // and routing. fixedPoint values are stable fractions (not drag jitter),
+    // so they are included unrounded.
+    const bindKey = (b: Binding | null) =>
+        b ? `${b.isPrecise ? 1 : 0}:${b.fixedPoint[0]},${b.fixedPoint[1]}` : 'n';
     return [
         r(startWorld.x), r(startWorld.y),
         r(endWorld.x), r(endWorld.y),
-        startDir, endDir,
+        bindKey(startBinding), bindKey(endBinding),
         startBBox ? `${r(startBBox.x)},${r(startBBox.y)},${r(startBBox.width)},${r(startBBox.height)}` : 'n',
         endBBox ? `${r(endBBox.x)},${r(endBBox.y)},${r(endBBox.width)},${r(endBBox.height)}` : 'n',
         obstacleFingerprint,
@@ -1611,6 +1670,27 @@ export function computeElbowPoints(
         excludeIds,
     );
 
+    // Build fingerprint for cache key (sorted for stability)
+    const fpParts: string[] = [];
+    const r = (v: number) => Math.round(v * 2) / 2;
+
+    for (const bbox of intermediateObstacles) {
+        fpParts.push(`${r(bbox.x)},${r(bbox.y)},${r(bbox.width)},${r(bbox.height)}`);
+    }
+
+    // ── Route cache lookup (BEFORE direction selection) ──
+    // The selected directions are a deterministic function of the cache-key
+    // inputs (positions, bboxes, bindings, obstacles), so a hit can
+    // short-circuit BOTH the direction-selection scoring and the A* route.
+    fpParts.sort(); // Stable fingerprint regardless of element order
+    const obstacleFP = fpParts.join(';');
+    const cacheKey = buildCacheKey(
+        startWorld, endWorld, startBinding, endBinding,
+        startShapeBBox, endShapeBBox, obstacleFP, minStubLength,
+    );
+    const cached = routeCache.get(cacheKey);
+    if (cached) return cached;
+
     const { startDir, endDir } = selectElbowDirectionPair({
         startWorld,
         endWorld,
@@ -1621,24 +1701,6 @@ export function computeElbowPoints(
         intermediateObstacles,
         minStubLength,
     });
-
-    // Build fingerprint for cache key (sorted for stability)
-    const fpParts: string[] = [];
-    const r = (v: number) => Math.round(v * 2) / 2;
-
-    for (const bbox of intermediateObstacles) {
-        fpParts.push(`${r(bbox.x)},${r(bbox.y)},${r(bbox.width)},${r(bbox.height)}`);
-    }
-
-    // ── Route cache lookup ──
-    fpParts.sort(); // Stable fingerprint regardless of element order
-    const obstacleFP = fpParts.join(';');
-    const cacheKey = buildCacheKey(
-        startWorld, endWorld, startDir, endDir,
-        startShapeBBox, endShapeBBox, obstacleFP, minStubLength,
-    );
-    const cached = routeCache.get(cacheKey);
-    if (cached) return cached;
 
     // ── Compute route ──
     const route = computeElbowRoute(

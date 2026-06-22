@@ -167,8 +167,15 @@ export class TileRenderer {
     private _cache: TileCache;
     private _drawFn: TileDrawFn;
     private _spatialQuery: TileSpatialQuery | null;
-    /** Element-to-tile mapping for incremental invalidation */
+    /** Element → tile keys mapping for incremental invalidation */
     private _elementTiles = new Map<string, string[]>();
+    /**
+     * Reverse of `_elementTiles`: tile key → element ids drawn into it.
+     * Lets us prune `_elementTiles` in O(elements-in-tile) when a tile is
+     * evicted, instead of scanning every element (and prevents the reverse
+     * map from growing unbounded / going stale over long pan sessions).
+     */
+    private _tileElements = new Map<string, Set<string>>();
     /** Global generation counter — bumped on bulk changes */
     private _generation = 0;
 
@@ -176,6 +183,8 @@ export class TileRenderer {
         this._cache = new TileCache(options.maxCachedTiles ?? 200);
         this._drawFn = options.drawFn ?? defaultDrawFn;
         this._spatialQuery = options.spatialQuery ?? null;
+        // Keep the element→tile indexes in sync when tiles leave the cache.
+        this._cache.setEvictionCallback((key) => this._onTileEvicted(key));
     }
 
     /** Update the spatial query at runtime (e.g. when a new R-tree is built). */
@@ -238,17 +247,53 @@ export class TileRenderer {
         }
     }
 
+    /**
+     * Invalidate tiles affected by a frame-to-frame element diff so edits
+     * repaint immediately rather than waiting for LRU eviction.
+     *
+     * - `changed` (added or visually modified elements): invalidates the tiles
+     *   they *previously* occupied via the reverse index AND the tiles they
+     *   *currently* overlap at every cached zoom level, so moves/resizes
+     *   repaint both source and destination tiles.
+     * - `removedIds` (deleted elements): invalidates their previously-occupied
+     *   tiles via the reverse index.
+     */
+    invalidateChangedElements(changed: CanvasElement[], removedIds: string[] = []): void {
+        if (changed.length === 0 && removedIds.length === 0) return;
+
+        // Old positions (changed elements + deletions) via the reverse index.
+        const oldIds: string[] = removedIds.length ? [...removedIds] : [];
+        for (const el of changed) oldIds.push(el.id);
+        this.invalidateElements(oldIds);
+
+        if (changed.length === 0) return;
+
+        // New positions: invalidate cached tiles overlapping the current bounds
+        // of each changed/added element, across every zoom level in the cache.
+        const zooms = this._cache.zoomLevels();
+        if (zooms.length === 0) return;
+        for (const zoom of zooms) {
+            for (const el of changed) {
+                for (const coord of getElementTiles(el, zoom)) {
+                    this._cache.invalidate(coord);
+                }
+            }
+        }
+    }
+
     /** Invalidate all tiles (e.g. after undo or bulk import). */
     invalidateAll(): void {
         this._generation++;
         this._cache.clear();
         this._elementTiles.clear();
+        this._tileElements.clear();
     }
 
     /** Free all resources */
     dispose(): void {
         this._cache.dispose();
         this._elementTiles.clear();
+        this._tileElements.clear();
     }
 
     /** Number of cached tiles */
@@ -257,6 +302,25 @@ export class TileRenderer {
     }
 
     // ── Internal ──────────────────────────────────────────────
+
+    /**
+     * Eviction hook fired by {@link TileCache} when a tile is dropped.
+     * Removes the tile key from the reverse `_elementTiles` index and clears
+     * the forward `_tileElements` entry so neither map grows unbounded or
+     * retains stale tile keys.
+     */
+    private _onTileEvicted(key: string): void {
+        const ids = this._tileElements.get(key);
+        if (!ids) return;
+        for (const id of ids) {
+            const tiles = this._elementTiles.get(id);
+            if (!tiles) continue;
+            const idx = tiles.indexOf(key);
+            if (idx !== -1) tiles.splice(idx, 1);
+            if (tiles.length === 0) this._elementTiles.delete(id);
+        }
+        this._tileElements.delete(key);
+    }
 
     private _rasterise(coord: TileCoord, allElements: CanvasElement[]): ImageBitmap {
         const bounds = tileBounds(coord);
@@ -276,7 +340,10 @@ export class TileRenderer {
                 if (aabbOverlap(elAABB, bounds)) tileElements.push(el);
             }
         }
-        // Track element → tile mapping for incremental invalidation.
+        // Track element ↔ tile mapping (both directions) for incremental
+        // invalidation. This tile is being rasterised fresh, so rebuild its
+        // forward entry from scratch.
+        const tileSet = new Set<string>();
         for (const el of tileElements) {
             const existing = this._elementTiles.get(el.id);
             if (existing) {
@@ -284,7 +351,9 @@ export class TileRenderer {
             } else {
                 this._elementTiles.set(el.id, [key]);
             }
+            tileSet.add(el.id);
         }
+        this._tileElements.set(key, tileSet);
 
         // Create OffscreenCanvas and draw
         const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE);

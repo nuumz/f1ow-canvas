@@ -71,17 +71,27 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
     );
     const elbowMinStub = hasCustomHead ? Math.ceil(size * 1.5) : undefined;
 
-    // Async Worker computation (returns null until a result arrives)
-    const workerResult = useElbowWorker(
+    // Async Worker computation (points is null until a result arrives)
+    const { points: workerResult, isWorkerActive } = useElbowWorker(
         isElbow,
         { startWorld: elbowStartWorld, endWorld: elbowEndWorld, startBinding, endBinding, minStubLength: elbowMinStub },
         allElements ?? [],
         shapeFP,
     );
 
-    // Sync fallback: used as initial render + when Worker is not available
+    // Last good elbow points (relative to startWorld). Reused while a fresh
+    // Worker result is pending so the A* doesn't re-run synchronously on
+    // every drag frame (which would defeat the off-thread Worker).
+    const lastElbowPointsRef = useRef<number[] | null>(null);
+
+    // Sync fallback: only run the (expensive) A* when the Worker is NOT
+    // active, or when there is no prior result yet (initial render). While the
+    // Worker is active and a result is still pending, reuse the previous
+    // points instead of routing again on the main thread.
     const syncElbowPoints = useMemo(() => {
         if (!isElbow) return points;
+        const prior = lastElbowPointsRef.current;
+        if (isWorkerActive && prior !== null) return prior;
         const raw = computeElbowPoints(
             elbowStartWorld,
             elbowEndWorld,
@@ -92,10 +102,12 @@ const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped
         );
         return simplifyElbowPath(raw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isElbow, x, y, points, startBinding, endBinding, shapeFP]);
+    }, [isElbow, isWorkerActive, x, y, points, startBinding, endBinding, shapeFP]);
 
     // For elbow mode: use Worker result if available, otherwise sync
     const elbowPointsRaw = isElbow ? (workerResult ?? syncElbowPoints) : points;
+    // Cache the points we actually rendered for the next pending frame.
+    if (isElbow) lastElbowPointsRef.current = elbowPointsRaw;
     const elbowPoints = useMemo(() => {
         if (!isElbow) return points;
         const result = [...elbowPointsRaw];

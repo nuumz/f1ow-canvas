@@ -15,6 +15,7 @@ import { syncAfterDrag } from '@/utils/dragSync';
 import { generateId } from '@/utils/id';
 import { elementRegistry } from '@/utils/elementRegistry';
 import { cloneAndRemapElements } from '@/utils/clone';
+import { generateNKeysBetween } from '@/utils/fractionalIndex';
 import {
     zoomAtPoint,
     getNextZoomStep,
@@ -51,6 +52,29 @@ function expandWithBoundChildren(
         }
     }
     return idSet;
+}
+
+/**
+ * Assign `sortOrder` fractional indices that match the array order, so both
+ * z-order readers stay in agreement: the non-collab render path (array order)
+ * AND the collaboration layer (which re-sorts elements by `sortOrder`).
+ *
+ * A clean ascending key sequence is regenerated for the whole array — every
+ * element gets a key, which is what lets the collab comparator perform a
+ * *total* sort (it only compares pairs where both keys are present). Elements
+ * whose key is unchanged keep their object identity to avoid spurious history
+ * diffs and re-renders.
+ */
+function withSortOrders(ordered: CanvasElement[]): CanvasElement[] {
+    if (ordered.length === 0) return ordered;
+    const keys = generateNKeysBetween(null, null, ordered.length);
+    let changed = false;
+    const next = ordered.map((el, i) => {
+        if (el.sortOrder === keys[i]) return el;
+        changed = true;
+        return { ...el, sortOrder: keys[i] } as CanvasElement;
+    });
+    return changed ? next : ordered;
 }
 
 // ─── History Entry ────────────────────────────────────────────
@@ -385,7 +409,10 @@ export function createCanvasStore() {
     },
 
     updateElement: (id, updates) => {
-        const updateValidation = elementRegistry.validateUpdate(updates as Record<string, unknown>);
+        // Validate the update against the current element so type-specific and
+        // style rules apply to partial updates in context.
+        const current = get().elements.find((el) => el.id === id) as Record<string, unknown> | undefined;
+        const updateValidation = elementRegistry.validateUpdate(updates as Record<string, unknown>, current);
         if (!updateValidation.valid) {
             if (import.meta.env.DEV) {
                 console.warn(`[f1ow] updateElement rejected — ${updateValidation.error}`);
@@ -419,8 +446,9 @@ export function createCanvasStore() {
         // Pre-validate ALL updates outside the set() callback.
         // Keeping the Zustand reducer pure (no side effects) is important for
         // StrictMode double-invocation and any future time-travel / replay support.
+        const byId = new Map(get().elements.map((el) => [el.id, el as unknown as Record<string, unknown>]));
         const validUpdates = batchUpdates.filter(({ id, updates }) => {
-            const v = elementRegistry.validateUpdate(updates as Record<string, unknown>);
+            const v = elementRegistry.validateUpdate(updates as Record<string, unknown>, byId.get(id));
             if (!v.valid) {
                 if (import.meta.env.DEV) {
                     console.warn(`[f1ow] batchUpdateElements: skipping invalid update for "${id}" — ${v.error}`);
@@ -525,8 +553,10 @@ export function createCanvasStore() {
         const shapeTypes = new Set(['rectangle', 'ellipse', 'diamond']);
         if (!shapeTypes.has(targetType)) return;
 
-        set((state) => ({
-            elements: state.elements.map((el) => {
+        const convertedIds: string[] = [];
+        set((state) => {
+            let changed = false;
+            const elements = state.elements.map((el) => {
                 if (!ids.includes(el.id)) return el;
                 if (!shapeTypes.has(el.type)) return el; // Can only convert shapes
                 if (el.type === targetType) return el;   // Already the target type
@@ -535,16 +565,35 @@ export function createCanvasStore() {
                 // converted element has a clean schema with no orphaned properties.
                 // e.g. rectangle→ellipse must not carry over cornerRadius.
                 const { cornerRadius: _cr, ...sharedFields } = el as typeof el & { cornerRadius?: number };
-                const base = { ...sharedFields, type: targetType };
+                // Bump version — the shape footprint changes, so bound connectors
+                // must treat their cached attachment points as stale.
+                const base = { ...sharedFields, type: targetType, version: (el.version ?? 0) + 1 };
 
-                if (targetType === 'rectangle') {
-                    return { ...base, cornerRadius: 0 } as CanvasElement;
+                const converted = (targetType === 'rectangle'
+                    ? { ...base, cornerRadius: 0 }
+                    // ellipse and diamond have no extra properties beyond BaseElement
+                    : base) as CanvasElement;
+
+                // Validate the converted element through the registry; keep the
+                // original unchanged if the conversion would produce invalid data.
+                const validation = elementRegistry.validateElement(converted);
+                if (!validation.valid) {
+                    if (import.meta.env.DEV) {
+                        console.warn(`[f1ow] convertElementType rejected — ${validation.error}`, converted);
+                    }
+                    return el;
                 }
-                // ellipse and diamond have no extra properties beyond BaseElement
-                return base as CanvasElement;
-            }),
-        }));
-        get().pushHistory();
+                changed = true;
+                convertedIds.push(el.id);
+                return converted;
+            });
+            return changed ? { elements } : state;
+        });
+        if (convertedIds.length > 0) {
+            // Re-sync bound connectors/labels against the new shape footprint.
+            syncMovedElements(convertedIds, get);
+            get().pushHistory();
+        }
     },
 
     bringToFront: (ids) => {
@@ -552,7 +601,7 @@ export function createCanvasStore() {
             const fullIds = expandWithBoundChildren(ids, state.elements);
             const others = state.elements.filter((el) => !fullIds.has(el.id));
             const targets = state.elements.filter((el) => fullIds.has(el.id));
-            return { elements: [...others, ...targets] };
+            return { elements: withSortOrders([...others, ...targets]) };
         });
         get().pushHistory();
     },
@@ -562,7 +611,7 @@ export function createCanvasStore() {
             const fullIds = expandWithBoundChildren(ids, state.elements);
             const others = state.elements.filter((el) => !fullIds.has(el.id));
             const targets = state.elements.filter((el) => fullIds.has(el.id));
-            return { elements: [...targets, ...others] };
+            return { elements: withSortOrders([...targets, ...others]) };
         });
         get().pushHistory();
     },
@@ -577,7 +626,7 @@ export function createCanvasStore() {
                     [elems[i], elems[i + 1]] = [elems[i + 1], elems[i]];
                 }
             }
-            return { elements: elems };
+            return { elements: withSortOrders(elems) };
         });
         get().pushHistory();
     },
@@ -592,7 +641,7 @@ export function createCanvasStore() {
                     [elems[i], elems[i - 1]] = [elems[i - 1], elems[i]];
                 }
             }
-            return { elements: elems };
+            return { elements: withSortOrders(elems) };
         });
         get().pushHistory();
     },

@@ -15,7 +15,7 @@
  * );
  * ```
  */
-import { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import type { CanvasElement, ViewportState } from '@/types';
 import { WebGLHybridRenderer, type WebGLHybridRendererOptions } from './WebGLHybridRenderer';
 
@@ -51,42 +51,62 @@ export function useWebGLHybrid(
 
     const rendererRef = useRef<WebGLHybridRenderer | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
-    const isActiveRef = useRef(false);
+    const rafRef = useRef<number | null>(null);
+    // `isActive` is state (not a ref) so consumers re-render when WebGL comes
+    // online — a ref read inside a memo would stay false forever.
+    const [isActive, setIsActive] = useState(false);
 
-    // Create renderer once
+    // Create / destroy the renderer in an effect (never during render).
+    // Idempotent: `init()` guards double-init so React 19 StrictMode's
+    // mount→unmount→mount double-invoke is safe.
     useEffect(() => {
-        if (!enabled) {
-            rendererRef.current?.dispose();
-            rendererRef.current = null;
-            isActiveRef.current = false;
-            return;
+        if (!enabled) return;
+        const renderer = new WebGLHybridRenderer({ rasterFn, elementThreshold });
+        rendererRef.current = renderer;
+        renderer.setSize(dimensions.width, dimensions.height);
+        // The canvas ref may already be attached (ref callbacks run before
+        // effects), so initialise immediately if so.
+        if (canvasRef.current) {
+            setIsActive(renderer.init(canvasRef.current));
         }
-        rendererRef.current = new WebGLHybridRenderer({ rasterFn, elementThreshold });
         return () => {
-            rendererRef.current?.dispose();
-            rendererRef.current = null;
-            isActiveRef.current = false;
+            renderer.dispose();
+            if (rendererRef.current === renderer) rendererRef.current = null;
+            setIsActive(false);
         };
+        // dimensions intentionally excluded — handled by the resize effect.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, rasterFn, elementThreshold]);
 
-    // Canvas ref callback
+    // Canvas ref callback — initialise once both canvas and renderer exist.
     const webglCanvasRef = useCallback((canvas: HTMLCanvasElement | null) => {
         canvasRef.current = canvas;
         if (canvas && rendererRef.current) {
-            isActiveRef.current = rendererRef.current.init(canvas);
+            setIsActive(rendererRef.current.init(canvas));
         }
     }, []);
 
-    // Update dimensions
+    // Keep canvas size in sync.
     useEffect(() => {
         rendererRef.current?.setSize(dimensions.width, dimensions.height);
     }, [dimensions.width, dimensions.height]);
 
-    // Render on every viewport/element change
+    // Render on relevant changes only, coalesced into a single rAF tick so
+    // bursts of React commits don't trigger redundant GPU work.
     useEffect(() => {
-        if (!rendererRef.current || !isActiveRef.current) return;
-        rendererRef.current.render(elements, selectedIds, viewport);
-    });
+        if (!isActive) return;
+        if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = null;
+            rendererRef.current?.render(elements, selectedIds, viewport);
+        });
+        return () => {
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+            }
+        };
+    }, [elements, selectedIds, viewport, dimensions, isActive]);
 
     const invalidateElements = useCallback((ids: string[]) => {
         rendererRef.current?.invalidateElements(ids);
@@ -96,11 +116,11 @@ export function useWebGLHybrid(
         rendererRef.current?.invalidateAll();
     }, []);
 
-    return useMemo(() => ({
+    return {
         webglCanvasRef,
-        isActive: isActiveRef.current,
+        isActive,
         invalidateElements,
         invalidateAll,
         instanceCount: rendererRef.current?.instanceCount ?? 0,
-    }), [webglCanvasRef, invalidateElements, invalidateAll]);
+    };
 }

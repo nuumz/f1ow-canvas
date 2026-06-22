@@ -22,6 +22,12 @@ function deepCloneElement(el: CanvasElement): CanvasElement {
     }
     // Deep-clone crop (ImageElement)
     if (clone.crop) clone.crop = { ...clone.crop };
+    // Deep-clone ports (each port.ratio tuple) — custom anchor points
+    if (Array.isArray(clone.ports)) clone.ports = structuredClone(clone.ports);
+    // Deep-clone extended line style (nested gradient.stops, taper)
+    if (clone.lineStyle) clone.lineStyle = structuredClone(clone.lineStyle);
+    // Deep-clone collaboration metadata
+    if (clone._meta) clone._meta = structuredClone(clone._meta);
     return clone as CanvasElement;
 }
 
@@ -132,10 +138,16 @@ export function cloneAndRemapElements(
         return dup as CanvasElement;
     });
 
+    // Build reverse newId→originalId map once to avoid an O(n²) scan below.
+    const newIdToOrigId = new Map<string, string>();
+    for (const [origId, newId] of idMap) {
+        newIdToOrigId.set(newId, origId);
+    }
+
     // Only these belong to the original selection (not auto-included text)
     const selectedCloneIds = clones
         .filter((c) => {
-            const origId = [...idMap.entries()].find(([, v]) => v === c.id)?.[0];
+            const origId = newIdToOrigId.get(c.id);
             return origId ? originalIds.has(origId) : false;
         })
         .map((c) => c.id);

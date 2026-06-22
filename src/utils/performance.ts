@@ -46,8 +46,14 @@ export function getVisibleBounds(
 export function getElementAABB(el: CanvasElement): AABB {
     if ((el.type === 'line' || el.type === 'arrow') && 'points' in el) {
         const pts = (el as LineElement | ArrowElement).points;
-        let minX = 0, maxX = 0, minY = 0, maxY = 0;
-        for (let i = 0; i < pts.length; i += 2) {
+        // Seed min/max from the FIRST point. Seeding from 0 forces the box
+        // to always include the local origin (0,0), which inflates the AABB
+        // for any element whose points don't start at the origin.
+        if (pts.length < 2) {
+            return { minX: el.x, minY: el.y, maxX: el.x, maxY: el.y };
+        }
+        let minX = pts[0], maxX = pts[0], minY = pts[1], maxY = pts[1];
+        for (let i = 2; i < pts.length; i += 2) {
             const px = pts[i];
             const py = pts[i + 1];
             if (px < minX) minX = px;

@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback } from 'react';
-import { useCanvasStore } from '@/store/useCanvasStore';
+import type { CanvasStore } from '@/store/useCanvasStore';
 import { useLinearEditStore } from '@/store/useLinearEditStore';
 import type { LineElement, ArrowElement } from '@/types';
 import { setClipboard } from '@/utils/clipboard';
@@ -9,24 +9,28 @@ import { GRID_SIZE, KEY_TO_TOOL } from '@/constants';
 
 /**
  * Keyboard shortcuts handler — canvas-standard hotkeys
+ * @param canvasStore - The resolved canvas store for THIS FlowCanvas instance.
+ *                      All state reads/actions go through it so multiple
+ *                      canvases on one page never cross-talk via the singleton.
  * @param enabled - Whether shortcuts are active (false = hooks still called, events ignored)
  * @param containerRef - Optional ref to canvas container (needed for zoomToFit/zoomToSelection)
  */
 export function useKeyboardShortcuts(
+    canvasStore: CanvasStore,
     enabled: boolean = true,
     containerRef?: React.RefObject<HTMLDivElement | null>,
 ) {
     // ─── Copy selected elements (lazy state read) ────────────
     const copyElements = useCallback(() => {
-        const { selectedIds, elements } = useCanvasStore.getState();
+        const { selectedIds, elements } = canvasStore.getState();
         if (selectedIds.length === 0) return;
         setClipboard(gatherElementsForCopy(selectedIds, elements));
-    }, []);
+    }, [canvasStore]);
 
     // ─── Nudge selected elements by arrow keys (lazy state read) ─
     const nudge = useCallback(
         (dx: number, dy: number) => {
-            const { selectedIds, elements, updateElement, pushHistory } = useCanvasStore.getState();
+            const { selectedIds, elements, updateElement, pushHistory } = canvasStore.getState();
             if (selectedIds.length === 0) return;
             selectedIds.forEach((id) => {
                 const el = elements.find((e) => e.id === id);
@@ -36,7 +40,7 @@ export function useKeyboardShortcuts(
             });
             pushHistory();
         },
-        [],
+        [canvasStore],
     );
 
     useEffect(() => {
@@ -49,7 +53,7 @@ export function useKeyboardShortcuts(
 
             // Lazy state reads — avoids re-attaching this listener on every
             // elements/selectedIds change. Actions are stable Zustand refs.
-            const store = useCanvasStore.getState();
+            const store = canvasStore.getState();
             const linearEdit = useLinearEditStore.getState();
 
             // ─── Tool Shortcuts (letters + numbers, Excalidraw-style) ──
@@ -304,7 +308,7 @@ export function useKeyboardShortcuts(
             // ─── Select All ───────────────────────────────────────
             if (isCmd && e.key === 'a') {
                 e.preventDefault();
-                const { elements, setSelectedIds } = useCanvasStore.getState();
+                const { elements, setSelectedIds } = canvasStore.getState();
                 setSelectedIds(elements.map((el) => el.id));
                 return;
             }
@@ -312,5 +316,5 @@ export function useKeyboardShortcuts(
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [enabled, containerRef, nudge, copyElements]);
+    }, [enabled, containerRef, nudge, copyElements, canvasStore]);
 }

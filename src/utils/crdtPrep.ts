@@ -1,17 +1,20 @@
 /**
- * crdtPrep.ts — CRDT structural preparation utilities.
+ * crdtPrep.ts — CRDT operation vocabulary + diff detection.
  *
- * Provides utilities for:
- *   1. Converting element array mutations to CRDT-compatible operations
- *   2. Applying operations to element state (for replay/sync)
- *   3. Managing operation history for collaboration
+ * Provides:
+ *   1. `detectOperations(prev, next)` — turn a store diff into intent ops
+ *   2. `applyOperation(elements, op)` — apply an op to an element array
+ *   3. `OperationLog` + op builders for history / replay
  *
- * This module is a "structural prep" — it establishes the interfaces
- * and patterns needed for full CRDT collaboration (Phase 4) without
- * actually implementing network sync or conflict resolution.
+ * This is the intent layer of the live collaboration engine:
+ * `CanvasSyncEngine` calls `detectOperations` on every local store diff and the
+ * codec's `applyOperationToYjs` maps each `CanvasOperation` 1:1 onto a granular
+ * Yjs mutation (delta moves, Y.Array/Y.Text reconcile, tombstone deletes).
  *
- * When full CRDT (e.g., Yjs) is integrated later, these operations
- * can be mapped 1:1 to Y.Doc transactions.
+ * IMPORTANT: this module stays intentionally Yjs-free. It is re-exported from
+ * the root bundle (`f1ow`), which must not statically pull in the optional
+ * `yjs` peer dependency — so the op→Yjs translation lives in the collaboration
+ * layer (`syncBridgeCodec.ts`), not here.
  */
 import type { CanvasElement, CanvasOperation, ElementStyle } from '@/types';
 

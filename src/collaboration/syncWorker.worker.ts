@@ -5,6 +5,10 @@
  * main thread. Communicates with the main thread via postMessage.
  *
  * This file is designed to be imported via Vite's `new Worker(new URL(...))`.
+ *
+ * @deprecated Divergent legacy copy of the blob-LWW sync logic; does not
+ * converge under concurrent edits. Superseded by {@link CollaborationManager}
+ * (`syncEngine.ts` + `syncBridgeCodec.ts`). Retained for backward compatibility.
  */
 
 // Import Yjs (yjs and y-websocket are pure JS — no DOM dependency)

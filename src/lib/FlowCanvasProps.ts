@@ -8,6 +8,92 @@ import type { CanvasStore } from '../store/useCanvasStore';
 // Re-export ContextMenuItem for consumer convenience
 export type { ContextMenuItem };
 
+// ─── Renderer strategy ────────────────────────────────────────
+
+/**
+ * Static-layer rendering strategy.
+ *
+ * - `'konva'`        — the default, fully-supported path. Static (non-selected)
+ *                      elements render as individual Konva nodes on a
+ *                      bitmap-cached layer. Best fidelity and interactivity.
+ * - `'webgl-hybrid'` — EXPERIMENTAL. Static elements are rasterised into a
+ *                      texture atlas and drawn as instanced quads on a WebGL2
+ *                      canvas behind the Konva Stage. Targets very large scenes
+ *                      (10k+ elements) but trades some fidelity (see below).
+ * - `'tiled'`        — EXPERIMENTAL. Static elements are rasterised into cached
+ *                      256×256 tiles drawn as Konva images. Good for large,
+ *                      sparse, pan-heavy scenes.
+ */
+export type RendererStrategy = 'konva' | 'webgl-hybrid' | 'tiled';
+
+/** Default element-count threshold before an accelerated renderer activates. */
+export const DEFAULT_RENDERER_ELEMENT_THRESHOLD = 1000;
+
+/**
+ * Inputs for {@link resolveRenderStrategy}. Kept as a plain data contract so
+ * the gating/fallback decision is unit-testable without a React renderer or a
+ * real WebGL/GPU context.
+ */
+export interface RenderStrategyDecisionInput {
+    /** The `renderer` prop value (may be undefined → defaults to `'konva'`). */
+    renderer?: RendererStrategy;
+    /** Element count the accelerated layer would draw (the static set). */
+    staticElementCount: number;
+    /** Activation threshold (`rendererOptions.elementThreshold` or default). */
+    elementThreshold: number;
+    /** Whether the WebGL2 engine initialised successfully (context available). */
+    webglAvailable: boolean;
+    /** Whether the tile engine reports itself active for this frame. */
+    tileActive: boolean;
+}
+
+/** Result of {@link resolveRenderStrategy}. */
+export interface RenderStrategyDecision {
+    /** Resolved strategy after defaulting (`renderer ?? 'konva'`). */
+    strategy: RendererStrategy;
+    /** Whether the static element count meets the activation threshold. */
+    meetsThreshold: boolean;
+    /**
+     * True when an accelerated layer should render INSTEAD of the Konva static
+     * layer. Always false for `'konva'`, or when the chosen engine is
+     * unavailable / below the element threshold.
+     */
+    useAccelerated: boolean;
+    /**
+     * True when the existing Konva static layer must render — i.e. the default
+     * path OR an accelerated path falling back. This is the inverse of
+     * `useAccelerated` and exists so call sites read intent-first.
+     */
+    useKonvaStatic: boolean;
+}
+
+/**
+ * Pure decision for which static-layer renderer to use this frame.
+ *
+ * Guarantees the default experience is never regressed: `'konva'` (the default
+ * when `renderer` is undefined) ALWAYS resolves to the Konva static layer.
+ * Accelerated strategies activate only when their engine is available AND the
+ * static element count meets the threshold; otherwise they fall back to the
+ * Konva static layer with no behaviour change.
+ */
+export function resolveRenderStrategy(input: RenderStrategyDecisionInput): RenderStrategyDecision {
+    const strategy = input.renderer ?? 'konva';
+    const meetsThreshold = input.staticElementCount >= input.elementThreshold;
+
+    let useAccelerated = false;
+    if (strategy === 'webgl-hybrid') {
+        useAccelerated = input.webglAvailable && meetsThreshold;
+    } else if (strategy === 'tiled') {
+        // The tile hook's `isActive` already encodes its own threshold check;
+        // we AND `meetsThreshold` so this function alone fully describes the
+        // fallback contract (and stays correct if the hook's gate changes).
+        useAccelerated = input.tileActive && meetsThreshold;
+    }
+    // strategy === 'konva' → useAccelerated stays false (default path).
+
+    return { strategy, meetsThreshold, useAccelerated, useKonvaStatic: !useAccelerated };
+}
+
 // ─── Context Menu Types ───────────────────────────────────────
 
 /** Context passed to custom context menu renderers */
@@ -95,6 +181,47 @@ export interface FlowCanvasProps {
 
     /** Additional CSS class for the root container */
     className?: string;
+
+    // ─── Rendering strategy (EXPERIMENTAL acceleration) ───────
+
+    /**
+     * Static-layer rendering strategy. Default `'konva'`.
+     *
+     * The default `'konva'` path is the fully-supported, highest-fidelity
+     * renderer and behaves identically whether or not this prop is set.
+     *
+     * `'webgl-hybrid'` and `'tiled'` are **EXPERIMENTAL** opt-in accelerators
+     * for very large scenes. They render ONLY static (non-selected,
+     * non-in-progress) elements; selected and actively-edited elements always
+     * render on the standard Konva interactive layer. Both auto-fall back to
+     * the Konva static layer when their engine is unavailable (e.g. no WebGL2)
+     * or the element count is below `rendererOptions.elementThreshold`.
+     *
+     * **Fidelity trade-offs (experimental paths):**
+     * - Shapes are rasterised by reusing Konva nodes, so clean shapes match
+     *   closely; rough/hand-drawn (`roughness > 0`) styling is approximated.
+     * - Images are not drawn on the accelerated static layer.
+     * - Text always renders via the HTML overlay, so text fidelity is
+     *   unaffected on every path.
+     *
+     * @default 'konva'
+     */
+    renderer?: RendererStrategy;
+
+    /**
+     * Tuning for the experimental accelerated renderers. Ignored when
+     * `renderer` is `'konva'`.
+     */
+    rendererOptions?: {
+        /**
+         * Minimum static element count before an accelerated renderer
+         * activates. Below this, the Konva static layer is used.
+         * @default 1000
+         */
+        elementThreshold?: number;
+        /** Max cached tiles for the `'tiled'` renderer. @default 200 */
+        maxCachedTiles?: number;
+    };
 
     /**
      * Render custom annotations, badges, or status indicators on top of canvas elements.

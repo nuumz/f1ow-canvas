@@ -1,8 +1,15 @@
 /**
- * collaboration/syncBridge.ts — Bidirectional sync between Yjs and Zustand store.
+ * collaboration/syncBridge.ts — LEGACY module-level Yjs ↔ Zustand bridge.
  *
- * This is the heart of the CRDT collaboration layer. It maintains two-way
- * synchronization between:
+ * @deprecated Superseded by the instance-scoped {@link CollaborationManager}
+ * (driven by `syncEngine.ts` + the shared `syncBridgeCodec.ts`), which performs
+ * genuine op-based CRDT sync that converges under concurrent edits. This module
+ * uses whole-blob LWW for arrays/text/bindings and a module-level singleton, so
+ * it neither merges concurrent edits to the same element nor supports multiple
+ * canvas instances. It remains exported only for backward compatibility; new
+ * code should use `useCollaboration` / `CollaborationManager`.
+ *
+ * It maintains two-way synchronization between:
  *   - Y.Map<Y.Map> (Yjs shared document — source of truth for collaboration)
  *   - useCanvasStore.elements[] (Zustand — source of truth for rendering)
  *
@@ -52,6 +59,7 @@ let _lastElements: CanvasElement[] = [];
  * Start bidirectional synchronization between Yjs and Zustand.
  * Call this after `createCollaborationProvider()`.
  *
+ * @deprecated Use {@link CollaborationManager.startSync} instead.
  * @param debounceMs - Debounce interval for local→Yjs sync (default: 50ms)
  */
 export function startSync(debounceMs = 50): void {
@@ -225,6 +233,8 @@ export function startSync(debounceMs = 50): void {
 
 /**
  * Stop synchronization and clean up listeners.
+ *
+ * @deprecated Use {@link CollaborationManager.stopSync} / `dispose` instead.
  */
 export function stopSync(): void {
     if (_unsubscribe) {
@@ -254,6 +264,11 @@ function syncLocalToYjs(
     doc: Y.Doc,
 ): void {
     _isApplyingLocal = true;
+
+    // Snapshot of what THIS client last had in sync, captured BEFORE we
+    // overwrite _lastElements. Used to compute which ids this client
+    // actually removed (delete-by-diff).
+    const prevElements = _lastElements;
     _lastElements = elements;
 
     const localMap = new Map<string, CanvasElement>();
@@ -261,12 +276,23 @@ function syncLocalToYjs(
         localMap.set(el.id, el);
     }
 
+    // Deletions = ids present in the previous local snapshot but absent now.
+    // We deliberately do NOT delete every Yjs id missing from the current
+    // local array: a freshly-arrived remote element may exist in Yjs while
+    // not yet merged into this client's elements, and treating the local
+    // array as the authoritative full set would destroy it. Only ids this
+    // client itself removed (were in prevElements, now gone) are deleted.
+    const deletedIds: string[] = [];
+    for (const prev of prevElements) {
+        if (!localMap.has(prev.id)) {
+            deletedIds.push(prev.id);
+        }
+    }
+
     doc.transact(() => {
-        // Remove deleted elements from Yjs
-        for (const [id] of yElements.entries()) {
-            if (!localMap.has(id)) {
-                yElements.delete(id);
-            }
+        // Remove only elements THIS client deleted
+        for (const id of deletedIds) {
+            yElements.delete(id);
         }
 
         // Add new / update existing elements
@@ -315,6 +341,26 @@ function updateYMapFromElement(el: CanvasElement, yMap: Y.Map<unknown>): void {
     const beJson = el.boundElements ? JSON.stringify(el.boundElements) : null;
     if (beJson !== yMap.get('boundElements')) {
         yMap.set('boundElements', beJson);
+    }
+
+    // Ports (custom connection points) — created-but-not-updated before
+    const portsJson = el.ports ? JSON.stringify(el.ports) : null;
+    if (portsJson !== yMap.get('ports')) {
+        yMap.set('ports', portsJson);
+    }
+
+    // Line style extension (gradient, taper, flow animation)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const lineStyle = 'lineStyle' in el ? (el as any).lineStyle : undefined;
+    const lineStyleJson = lineStyle ? JSON.stringify(lineStyle) : null;
+    if (lineStyleJson !== yMap.get('lineStyle')) {
+        yMap.set('lineStyle', lineStyleJson);
+    }
+
+    // Group IDs (group membership changes must propagate)
+    const groupIdsJson = el.groupIds ? JSON.stringify(el.groupIds) : null;
+    if (groupIdsJson !== yMap.get('groupIds')) {
+        yMap.set('groupIds', groupIdsJson);
     }
 
     // Type-specific

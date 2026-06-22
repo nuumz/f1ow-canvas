@@ -15,12 +15,20 @@ import type {
     Binding,
     SnapTarget,
 } from '@/types';
+import type { CanvasStore } from '@/store/useCanvasStore';
 
 /**
  * Shared context passed to every tool handler.
  * Contains store state, actions, utilities, and refs that tools need.
  */
 export interface ToolContext {
+    // ─── Store Instance ───────────────────────────────────────
+    // The resolved canvas store for THIS FlowCanvas instance. Tools read
+    // transient state (pause/resume history, fresh elements, line-type
+    // defaults) through `store.getState()` so multiple FlowCanvas instances
+    // stay fully isolated instead of all mutating the module-level singleton.
+    store: CanvasStore;
+
     // ─── Current State ────────────────────────────────────────
     elements: CanvasElement[];
     selectedIds: string[];
@@ -100,6 +108,25 @@ export interface ToolHandler {
      * @param ctx - Shared tool context
      */
     onMouseUp(ctx: ToolContext): void;
+
+    /**
+     * Optional: finalize-or-abort any in-flight gesture when this tool is
+     * being torn down — either because the active tool is switching away, or
+     * because the pointer was released/cancelled OUTSIDE the Stage (where the
+     * Stage `onMouseUp` never fires).
+     *
+     * Implementations MUST be idempotent and self-guarding: if there is no
+     * gesture in progress, do nothing. When a gesture is in progress they MUST
+     * guarantee any paused history is resumed (balancing the `pauseHistory()`
+     * from `onMouseDown`), finalize or discard the half-created element
+     * sensibly, and reset their own module-level gesture state.
+     *
+     * Unlike `onMouseUp`, `deactivate` MUST NOT call `setActiveTool` — the tool
+     * transition is already being driven by the caller.
+     *
+     * @param ctx - Shared tool context
+     */
+    deactivate?(ctx: ToolContext): void;
 
     /**
      * Optional: custom cursor for this tool.

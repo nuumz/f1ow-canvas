@@ -16,8 +16,15 @@
  *   - rebuild:       ~1.2ms (vs ~2ms for R-tree bulk load)
  *   - viewportCull:  ~0.3ms (vs ~0.8ms AoS linear scan)
  *   - AABB overlap:  ~1.5ms for 100K (vs ~4ms AoS)
+ *
+ * The (x, y, w, h) buffers store each element's true axis-aligned bounding
+ * box (min corner + extent), NOT the raw element transform. For box-shaped
+ * elements this equals (x, y, width, height); for lines/arrows/freedraw it
+ * is derived from their `points` via `getElementAABB` so culling matches the
+ * linear `cullToViewport` fallback exactly.
  */
 import type { CanvasElement, ViewportState } from '@/types';
+import { getElementAABB } from '@/utils/performance';
 
 // ─── Element type encoding ────────────────────────────────────
 
@@ -43,13 +50,13 @@ export const ELEMENT_TYPE_MAP: Record<string, number> = {
 export interface SpatialSoAData {
     /** Element IDs, indexed in parallel */
     ids: string[];
-    /** X position (world-space) */
+    /** AABB min-X (world-space) — left edge of the element's bounding box */
     x: Float64Array;
-    /** Y position (world-space) */
+    /** AABB min-Y (world-space) — top edge of the element's bounding box */
     y: Float64Array;
-    /** Width (world-space) */
+    /** AABB width (world-space) — maxX − minX */
     w: Float64Array;
-    /** Height (world-space) */
+    /** AABB height (world-space) — maxY − minY */
     h: Float64Array;
     /** Element type as numeric code */
     types: Uint8Array;
@@ -139,11 +146,16 @@ export class SpatialSoA {
 
         for (let i = 0; i < n; i++) {
             const el = elements[i];
+            // Store the true AABB (min corner + extent). For lines/arrows/
+            // freedraw the visual extent is driven by `points`, not just
+            // x/y/width/height, so we derive bounds via the shared helper to
+            // stay consistent with the linear `cullToViewport` fallback.
+            const bb = getElementAABB(el);
             ids[i] = el.id;
-            x[i] = el.x;
-            y[i] = el.y;
-            w[i] = el.width;
-            h[i] = el.height;
+            x[i] = bb.minX;
+            y[i] = bb.minY;
+            w[i] = bb.maxX - bb.minX;
+            h[i] = bb.maxY - bb.minY;
             types[i] = ELEMENT_TYPE_MAP[el.type] ?? 0;
             this._indexMap.set(el.id, i);
         }
@@ -158,10 +170,12 @@ export class SpatialSoA {
     updateElement(el: CanvasElement): boolean {
         const idx = this._indexMap.get(el.id);
         if (idx === undefined) return false;
-        this._data.x[idx] = el.x;
-        this._data.y[idx] = el.y;
-        this._data.w[idx] = el.width;
-        this._data.h[idx] = el.height;
+        // Recompute the true AABB so points-based elements stay correct.
+        const bb = getElementAABB(el);
+        this._data.x[idx] = bb.minX;
+        this._data.y[idx] = bb.minY;
+        this._data.w[idx] = bb.maxX - bb.minX;
+        this._data.h[idx] = bb.maxY - bb.minY;
         return true;
     }
 

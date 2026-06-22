@@ -7,10 +7,19 @@
  */
 import { createContext, useContext } from 'react';
 import type { WorkerConfig } from '@/utils/workerFactory';
+import type { ElbowWorkerManager } from '@/utils/elbowWorkerManager';
 
 export interface WorkerConfigContextValue {
     elbowWorkerConfig?: WorkerConfig;
     exportWorkerConfig?: WorkerConfig;
+    /**
+     * Per-FlowCanvas-instance elbow routing worker manager. Each FlowCanvas
+     * creates and owns one, so a canvas routes only against its OWN obstacles
+     * and disposing one canvas never tears down another's worker. When absent
+     * (no provider, or shapes rendered standalone), consumers fall back to the
+     * module-level singleton via `getElbowWorkerManager()`.
+     */
+    elbowWorkerManager?: ElbowWorkerManager;
 }
 
 export const WorkerConfigContext = createContext<WorkerConfigContextValue | undefined>(undefined);

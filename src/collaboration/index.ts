@@ -14,6 +14,7 @@ export type {
 } from './types';
 
 // Provider management (legacy singleton API — for single-instance usage)
+// @deprecated Prefer the instance-scoped `CollaborationManager`. Kept for back-compat.
 export {
     createCollaborationProvider,
     destroyCollaborationProvider,
@@ -27,6 +28,7 @@ export {
 } from './yjsProvider';
 
 // Sync bridge (legacy singleton API)
+// @deprecated Prefer `CollaborationManager.startSync` / `stopSync`. Kept for back-compat.
 export { startSync, stopSync } from './syncBridge';
 
 // Sync codec (shared serialization)
@@ -36,6 +38,7 @@ export { elementToYMap, yMapToElement, SYNC_FIELDS, STYLE_FIELDS } from './syncB
 export { CollaborationManager } from './CollaborationManager';
 
 // Web Worker-based sync adapter (offloads CRDT to worker thread)
+// @deprecated Divergent legacy copy; does not converge. Kept for back-compat.
 export { SyncWorkerAdapter } from './syncWorker';
 export type { WorkerInMessage, WorkerOutMessage, SyncWorkerCallbacks } from './syncWorker';
 

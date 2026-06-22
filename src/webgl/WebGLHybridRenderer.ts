@@ -28,7 +28,7 @@
 
 import type { CanvasElement, ViewportState } from '@/types';
 import { VERT_SRC, FRAG_SRC } from './shaders';
-import { createProgram, createBuffer, uploadTexture, buildViewMatrix } from './glUtils';
+import { createProgram, createBuffer, uploadTexture, uploadTextureSubRect, buildViewMatrix } from './glUtils';
 import { TextureAtlas, type ElementRasterFn, type AtlasRegion } from './textureAtlas';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -54,9 +54,68 @@ export interface WebGLHybridRendererOptions {
  *   float a_rotation                      — offset 9, 1 float
  * Total: 10 floats per instance
  */
-const FLOATS_PER_INSTANCE = 10;
+export const FLOATS_PER_INSTANCE = 10;
 const INSTANCE_DATA_SHRINK_RATIO = 0.5;
 const INSTANCE_DATA_MIN_CAPACITY = FLOATS_PER_INSTANCE * 256;
+
+// ─── Pure helpers (no GL — unit testable) ─────────────────────
+
+/**
+ * Decide whether an element must be (re)rasterised into the atlas.
+ *
+ * An element needs rastering when it has no atlas region yet, or when its
+ * monotonic `version` (bumped by the data model on geometry/port mutation)
+ * differs from the version last rasterised. This is the content signature
+ * that keeps the generation counter from being bumped every frame.
+ */
+export function needsRaster(
+    element: CanvasElement,
+    lastVersion: number | undefined,
+    hasRegion: boolean,
+): boolean {
+    return !hasRegion || lastVersion !== element.version;
+}
+
+/**
+ * Pack per-instance attribute floats for `elements` into `target`.
+ * Elements without an atlas region are skipped. Returns the instance count.
+ *
+ * `target` must have capacity for `elements.length * FLOATS_PER_INSTANCE`.
+ */
+export function writeInstanceData(
+    elements: CanvasElement[],
+    getRegion: (id: string) => AtlasRegion | null,
+    target: Float32Array,
+): number {
+    let offset = 0;
+    let rendered = 0;
+    for (const el of elements) {
+        const region = getRegion(el.id);
+        if (!region) continue;
+
+        // a_worldRect
+        target[offset + 0] = el.x;
+        target[offset + 1] = el.y;
+        target[offset + 2] = el.width;
+        target[offset + 3] = el.height;
+
+        // a_texRect
+        target[offset + 4] = region.u;
+        target[offset + 5] = region.v;
+        target[offset + 6] = region.uWidth;
+        target[offset + 7] = region.vHeight;
+
+        // a_opacity
+        target[offset + 8] = el.style?.opacity ?? 1;
+
+        // a_rotation (degrees → radians)
+        target[offset + 9] = ((el.rotation ?? 0) * Math.PI) / 180;
+
+        offset += FLOATS_PER_INSTANCE;
+        rendered++;
+    }
+    return rendered;
+}
 
 // ─── WebGLHybridRenderer ──────────────────────────────────────
 
@@ -75,7 +134,8 @@ export class WebGLHybridRenderer {
     private _instanceCount = 0;
     private _elementThreshold: number;
     private _generation = 0;
-    private _staticIds = new Set<string>();
+    /** Last rasterised `version` per element id — the content signature. */
+    private _elementVersions = new Map<string, number>();
     private _isInitialised = false;
     private _width = 0;
     private _height = 0;
@@ -171,9 +231,12 @@ export class WebGLHybridRenderer {
 
         gl.bindVertexArray(null);
 
-        // Enable blending for transparent elements
+        // Enable blending for transparent elements.
+        // The atlas is uploaded with UNPACK_PREMULTIPLY_ALPHA_WEBGL (see
+        // glUtils.uploadTexture), so the source is premultiplied and we use
+        // the premultiplied blend equation on this premultipliedAlpha context.
         gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // premultiplied alpha
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
         this._isInitialised = true;
         return true;
@@ -218,15 +281,36 @@ export class WebGLHybridRenderer {
 
         if (staticElements.length === 0) return;
 
-        // Update atlas with static elements
-        this._generation++;
+        // Update atlas with static elements. Only (re)rasterise elements whose
+        // content actually changed (new, version bumped, or evicted) — the
+        // generation is bumped per change, NEVER per frame, so unchanged
+        // elements keep their existing atlas slot and nothing is re-packed.
         for (const el of staticElements) {
-            this._atlas.addOrUpdate(el, this._generation);
+            const hasRegion = this._atlas.getRegion(el.id) !== null;
+            if (!needsRaster(el, this._elementVersions.get(el.id), hasRegion)) continue;
+            this._generation++;
+            const region = this._atlas.addOrUpdate(el, this._generation);
+            if (region) {
+                this._elementVersions.set(el.id, el.version);
+            }
         }
 
-        // Upload atlas texture if dirty
+        // Upload atlas texture only when it actually changed. Stream just the
+        // dirty sub-rect via texSubImage2D; full texImage2D (realloc) is used
+        // only on first upload or after a compaction/rebuild.
         if (this._atlas.isDirty) {
-            this._atlasTexture = uploadTexture(gl, this._atlas.getCanvas(), this._atlasTexture);
+            const dirty = this._atlas.consumeDirty();
+            if (dirty) {
+                const canvas = this._atlas.getCanvas();
+                if (!this._atlasTexture || dirty.full) {
+                    this._atlasTexture = uploadTexture(gl, canvas, this._atlasTexture);
+                } else {
+                    uploadTextureSubRect(
+                        gl, this._atlasTexture, canvas,
+                        dirty.x, dirty.y, dirty.width, dirty.height, canvas.width,
+                    );
+                }
+            }
         }
 
         // Build instance data
@@ -286,14 +370,17 @@ export class WebGLHybridRenderer {
     invalidateElements(ids: string[]): void {
         for (const id of ids) {
             this._atlas.remove(id);
+            this._elementVersions.delete(id);
         }
     }
 
     /**
-     * Force a full atlas rebuild (e.g. after undo, import).
+     * Force a full atlas rebuild (e.g. after undo, import). Elements are
+     * re-rasterised lazily on the next render via the version signature.
      */
     invalidateAll(): void {
         this._atlas.rebuild([]);
+        this._elementVersions.clear();
     }
 
     // ── Cleanup ───────────────────────────────────────────────
@@ -308,6 +395,8 @@ export class WebGLHybridRenderer {
             if (this._atlasTexture) gl.deleteTexture(this._atlasTexture);
         }
         this._atlas.dispose();
+        this._elementVersions.clear();
+        this._atlasTexture = null;
         this._isInitialised = false;
         this._gl = null;
         this._canvas = null;
@@ -325,33 +414,10 @@ export class WebGLHybridRenderer {
             this._instanceData = new Float32Array(Math.max(needed, INSTANCE_DATA_MIN_CAPACITY));
         }
 
-        let offset = 0;
-        let rendered = 0;
-        for (const el of elements) {
-            const region = this._atlas.getRegion(el.id);
-            if (!region) continue;
-
-            // a_worldRect
-            this._instanceData[offset + 0] = el.x;
-            this._instanceData[offset + 1] = el.y;
-            this._instanceData[offset + 2] = el.width;
-            this._instanceData[offset + 3] = el.height;
-
-            // a_texRect
-            this._instanceData[offset + 4] = region.u;
-            this._instanceData[offset + 5] = region.v;
-            this._instanceData[offset + 6] = region.uWidth;
-            this._instanceData[offset + 7] = region.vHeight;
-
-            // a_opacity
-            this._instanceData[offset + 8] = el.style?.opacity ?? 1;
-
-            // a_rotation (degrees → radians)
-            this._instanceData[offset + 9] = (el.rotation ?? 0) * Math.PI / 180;
-
-            offset += FLOATS_PER_INSTANCE;
-            rendered++;
-        }
-        this._instanceCount = rendered;
+        this._instanceCount = writeInstanceData(
+            elements,
+            (id) => this._atlas.getRegion(id),
+            this._instanceData,
+        );
     }
 }

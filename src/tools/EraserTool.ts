@@ -35,6 +35,14 @@ export const eraserTool: ToolHandler = {
         isErasing = false;
     },
 
+    deactivate(_ctx: ToolContext) {
+        // Reset the drag flag so a release outside the Stage (or a tool switch
+        // mid-erase) can't leave hover-to-delete armed. The eraser deletes
+        // synchronously and never pauses history, so there is nothing else to
+        // finalize here.
+        isErasing = false;
+    },
+
     getCursor() {
         return 'not-allowed';
     },

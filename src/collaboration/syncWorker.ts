@@ -30,6 +30,11 @@
  *
  * This file defines the protocol types and a thin main-thread adapter.
  * The actual worker code is in syncWorker.worker.ts.
+ *
+ * @deprecated This worker-based adapter is a divergent copy of the legacy
+ * blob-LWW sync logic and does NOT converge under concurrent edits. The live
+ * path is {@link CollaborationManager} (`syncEngine.ts` + `syncBridgeCodec.ts`).
+ * Kept exported for backward compatibility only.
  */
 
 import type { CanvasElement } from '@/types';

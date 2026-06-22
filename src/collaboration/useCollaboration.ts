@@ -1,11 +1,12 @@
 /**
  * collaboration/useCollaboration.ts — React hook for CRDT collaboration.
  *
- * Provides a simple, declarative API for enabling real-time collaboration
- * on a FlowCanvas instance. Manages the full lifecycle:
- *   1. Create Yjs document + WebSocket provider
- *   2. Start bidirectional sync with Zustand store
- *   3. Share cursor/selection awareness
+ * Declarative API for enabling real-time, genuinely-convergent collaboration on
+ * a FlowCanvas instance. Drives a single {@link CollaborationManager} (the
+ * consolidated instance-scoped engine) through its full lifecycle:
+ *   1. Create Yjs document + WebSocket provider (via the manager)
+ *   2. Start op-based bidirectional sync with the canvas store
+ *   3. Share cursor / selection / tool awareness
  *   4. Clean up on unmount
  *
  * Usage:
@@ -20,32 +21,26 @@
  *   return <FlowCanvas />;
  * }
  * ```
+ *
+ * `yjs` / `y-websocket` stay optional peer dependencies: `CollaborationManager`
+ * (which statically imports them) is loaded via dynamic `import()` only when
+ * `config` is non-null, so apps that never enable collaboration do not need
+ * those packages installed.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { CollaborationConfig, ConnectionStatus, AwarenessState } from './types';
-// NOTE: `yjsProvider` and `syncBridge` are imported dynamically below to keep
-// `yjs` and `y-websocket` as truly optional peer dependencies. Importing them
-// statically here would force every consumer (even those not using
-// collaboration) to install `yjs`, defeating the optional peer metadata.
-import type * as YjsProviderModule from './yjsProvider';
-import type * as SyncBridgeModule from './syncBridge';
-import { useCanvasStore } from '@/store/useCanvasStore';
+import type { CollaborationManager as CollaborationManagerClass } from './CollaborationManager';
+import { useCanvasStore, type CanvasStore } from '@/store/useCanvasStore';
 
 // ─── Lazy module loading ──────────────────────────────────────
 
-let _modulesPromise: Promise<{
-    yjsProvider: typeof YjsProviderModule;
-    syncBridge: typeof SyncBridgeModule;
-}> | null = null;
+let _managerModulePromise: Promise<typeof import('./CollaborationManager')> | null = null;
 
-function loadCollabModules() {
-    if (!_modulesPromise) {
-        _modulesPromise = Promise.all([
-            import('./yjsProvider'),
-            import('./syncBridge'),
-        ]).then(([yjsProvider, syncBridge]) => ({ yjsProvider, syncBridge }));
+function loadManagerModule() {
+    if (!_managerModulePromise) {
+        _managerModulePromise = import('./CollaborationManager');
     }
-    return _modulesPromise;
+    return _managerModulePromise;
 }
 
 // ─── Hook Return Type ─────────────────────────────────────────
@@ -69,35 +64,31 @@ export interface UseCollaborationReturn {
  * React hook to enable CRDT collaboration on the canvas.
  * Pass `null` as config to disable collaboration.
  *
- * `yjs` and `y-websocket` are loaded via dynamic `import()` only when
- * `config` is non-null, so apps that never enable collaboration do not
- * need those packages installed.
+ * @param config collaboration config, or `null` to disable
+ * @param store  the canvas store to mirror. Defaults to the module-level
+ *   `useCanvasStore` singleton so existing single-instance call sites keep
+ *   working unchanged; multi-instance wiring passes the per-instance store.
  */
 export function useCollaboration(
     config: CollaborationConfig | null,
+    store: CanvasStore = useCanvasStore,
 ): UseCollaborationReturn {
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
     const [peers, setPeers] = useState<AwarenessState[]>([]);
-    const configRef = useRef(config);
-    configRef.current = config;
 
-    // Track awarenessThrottleMs for cursor updates
+    // Keep cursor throttle current without re-running the connection effect.
     const throttleRef = useRef(config?.awarenessThrottleMs ?? 100);
+    throttleRef.current = config?.awarenessThrottleMs ?? 100;
     const lastCursorUpdateRef = useRef(0);
-    const modulesRef = useRef<{
-        yjsProvider: typeof YjsProviderModule;
-        syncBridge: typeof SyncBridgeModule;
-    } | null>(null);
+
+    const managerRef = useRef<CollaborationManagerClass | null>(null);
 
     // ─── Connection lifecycle ─────────────────────────────────
     useEffect(() => {
         if (!config) {
-            // If a previous activation loaded the modules, tear them down.
-            const loaded = modulesRef.current;
-            if (loaded) {
-                loaded.yjsProvider.destroyCollaborationProvider();
-                loaded.syncBridge.stopSync();
-            }
+            // Tear down any previously-created manager.
+            managerRef.current?.dispose();
+            managerRef.current = null;
             setConnectionStatus('disconnected');
             setPeers([]);
             return;
@@ -106,40 +97,43 @@ export function useCollaboration(
         let cancelled = false;
         let cleanup: (() => void) | null = null;
 
-        loadCollabModules()
-            .then((mods) => {
+        loadManagerModule()
+            .then(({ CollaborationManager }) => {
                 if (cancelled) return;
-                modulesRef.current = mods;
-                const { createCollaborationProvider, onStatusChange, getRemoteAwareness, updateAwareness } =
-                    mods.yjsProvider;
-                const { startSync, stopSync } = mods.syncBridge;
 
-                const { provider } = createCollaborationProvider(config);
-                startSync(config.syncDebounceMs ?? 50);
+                const mgr = new CollaborationManager();
+                managerRef.current = mgr;
 
-                const unsubStatus = onStatusChange(setConnectionStatus);
+                mgr.connect(config);
+                mgr.startSync(store, config.syncDebounceMs ?? 50);
+
+                const unsubStatus = mgr.onStatusChange(setConnectionStatus);
 
                 const awarenessHandler = () => {
-                    const remote = getRemoteAwareness();
-                    setPeers(Array.from(remote.values()));
+                    const remote = mgr.getRemoteAwareness();
+                    // Carry the Yjs clientID onto each peer so the cursor overlay
+                    // can key by it (same user in two tabs shares user.id but has
+                    // distinct clientIDs).
+                    setPeers(Array.from(remote, ([clientID, state]) => ({ ...state, clientID })));
                 };
-                provider.awareness.on('change', awarenessHandler);
+                mgr.provider?.awareness.on('change', awarenessHandler);
 
-                const unsubStore = useCanvasStore.subscribe((state, prevState) => {
+                // Share selection / tool presence from the resolved store.
+                const unsubStore = store.subscribe((state, prevState) => {
                     if (state.selectedIds !== prevState.selectedIds) {
-                        updateAwareness({ selectedIds: state.selectedIds });
+                        mgr.updateAwareness({ selectedIds: state.selectedIds });
                     }
                     if (state.activeTool !== prevState.activeTool) {
-                        updateAwareness({ activeTool: state.activeTool });
+                        mgr.updateAwareness({ activeTool: state.activeTool });
                     }
                 });
 
                 cleanup = () => {
                     unsubStatus();
                     unsubStore();
-                    provider.awareness.off('change', awarenessHandler);
-                    stopSync();
-                    mods.yjsProvider.destroyCollaborationProvider();
+                    mgr.provider?.awareness.off('change', awarenessHandler);
+                    mgr.dispose();
+                    managerRef.current = null;
                 };
             })
             .catch((err) => {
@@ -159,31 +153,37 @@ export function useCollaboration(
             setPeers([]);
         };
     }, [
-        // Re-create if server/room/user changes
+        // Re-create if server/room/user/store changes
         config?.serverUrl,
         config?.roomName,
         config?.user.id,
+        store,
         // eslint-disable-next-line react-hooks/exhaustive-deps
         config?.syncDebounceMs,
     ]);
 
     // ─── Cursor update (throttled) ────────────────────────────
     const updateCursor = useCallback((position: { x: number; y: number } | null) => {
+        // Leave/clear (null) must propagate immediately — if it gets dropped
+        // inside the throttle window the peer's cursor stays stuck on screen.
+        if (position === null) {
+            lastCursorUpdateRef.current = Date.now();
+            managerRef.current?.updateAwareness({ cursor: null });
+            return;
+        }
         const now = Date.now();
         if (now - lastCursorUpdateRef.current < throttleRef.current) return;
         lastCursorUpdateRef.current = now;
-        modulesRef.current?.yjsProvider.updateAwareness({ cursor: position });
+        managerRef.current?.updateAwareness({ cursor: position });
     }, []);
 
     // ─── Manual connect/disconnect ────────────────────────────
     const disconnect = useCallback(() => {
-        const provider = modulesRef.current?.yjsProvider.getYProvider();
-        if (provider) provider.disconnect();
+        managerRef.current?.provider?.disconnect();
     }, []);
 
     const reconnect = useCallback(() => {
-        const provider = modulesRef.current?.yjsProvider.getYProvider();
-        if (provider) provider.connect();
+        managerRef.current?.provider?.connect();
     }, []);
 
     return {
