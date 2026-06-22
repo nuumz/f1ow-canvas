@@ -223,7 +223,7 @@ const ImageShape: React.FC<Props> = ({
         width: rw,
         height: rh,
         rotation,
-        transformsEnabled: (rotation ? 'all' : 'position') as 'all' | 'position',
+        transformsEnabled: ((rotation || isSelected) ? 'all' : 'position') as 'all' | 'position',
         draggable: !isLocked && !isGrouped,
         clipFunc,
         onClick: () => onSelect(id),

@@ -103,7 +103,7 @@ const EllipseShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
                 offsetX={rx + pad}
                 offsetY={ry + pad}
                 rotation={rotation}
-                transformsEnabled={rotation ? 'all' : 'position'}
+                transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {
                     const cx = rx + pad;
                     const cy = ry + pad;
@@ -154,7 +154,7 @@ const EllipseShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
             radiusX={width / 2}
             radiusY={height / 2}
             rotation={rotation}
-            transformsEnabled={rotation ? 'all' : 'position'}
+            transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
             fill={style.fillColor}
             stroke={style.strokeColor}
             strokeWidth={style.strokeWidth}

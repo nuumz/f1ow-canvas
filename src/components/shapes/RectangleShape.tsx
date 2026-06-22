@@ -107,7 +107,7 @@ const RectangleShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSel
                 width={width}
                 height={height}
                 rotation={rotation}
-                transformsEnabled={rotation ? 'all' : 'position'}
+                transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {
                     // 1. Fill — use rounded-rect path when cornerRadius > 0
                     if (cornerRadius > 0) {
@@ -160,7 +160,7 @@ const RectangleShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSel
             width={width}
             height={height}
             rotation={rotation}
-            transformsEnabled={rotation ? 'all' : 'position'}
+            transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
             cornerRadius={cornerRadius}
             fill={style.fillColor}
             stroke={style.strokeColor}

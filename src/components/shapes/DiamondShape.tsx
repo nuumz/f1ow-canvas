@@ -88,7 +88,7 @@ const DiamondShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
                 width={width + pad * 2}
                 height={height + pad * 2}
                 rotation={rotation}
-                transformsEnabled={rotation ? 'all' : 'position'}
+                transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
                 sceneFunc={(ctx, shape) => {
                     // 1. Fill with clean diamond path
                     const pts = getDiamondPoints(width, height);
@@ -142,7 +142,7 @@ const DiamondShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
             points={getDiamondPoints(width, height)}
             closed
             rotation={rotation}
-            transformsEnabled={rotation ? 'all' : 'position'}
+            transformsEnabled={(rotation || isSelected) ? 'all' : 'position'}
             fill={style.fillColor}
             stroke={style.strokeColor}
             strokeWidth={style.strokeWidth}
