@@ -61,7 +61,7 @@ const EllipseShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
         node.setAttrs({ scaleX: 1, scaleY: 1, radiusX: rX, radiusY: rY });
         const newW = rX * 2;
         const newH = rY * 2;
-        onDragMove?.(id, { x: node.x() - rX, y: node.y() - rY, width: newW, height: newH });
+        onDragMove?.(id, { x: node.x() - rX, y: node.y() - rY, width: newW, height: newH, rotation: node.rotation() });
     }, [id, width, height, onDragMove]);
 
     const handleTransformEnd = useCallback((e: any) => {

@@ -72,7 +72,7 @@ const RectangleShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSel
         const newW = Math.max(5, node.width() * sx);
         const newH = Math.max(5, node.height() * sy);
         node.setAttrs({ scaleX: 1, scaleY: 1, width: newW, height: newH });
-        onDragMove?.(id, { x: node.x(), y: node.y(), width: newW, height: newH });
+        onDragMove?.(id, { x: node.x(), y: node.y(), width: newW, height: newH, rotation: node.rotation() });
     }, [id, onDragMove]);
 
     const handleTransformEnd = useCallback((e: any) => {

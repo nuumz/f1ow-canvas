@@ -60,6 +60,19 @@ export interface CollaborationConfig {
      * @default 100
      */
     awarenessThrottleMs?: number;
+    /**
+     * Acknowledge and enable EXPERIMENTAL live document sync.
+     *
+     * ⚠️ Live collaboration currently has a KNOWN DATA-LOSS bug: a remote edit
+     * that arrives within the local sync debounce window can drop a peer's
+     * concurrent change and leave the two clients' documents permanently
+     * divergent (see `syncEngine._applyRemote`). Until this is fixed, live
+     * collaboration is DISABLED unless you set this to `true` to opt in at your
+     * own risk (e.g. for testing). Awareness/cursors are gated together with it.
+     *
+     * @default false
+     */
+    experimental?: boolean;
 }
 
 /** Collaboration connection status */

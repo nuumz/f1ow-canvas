@@ -94,6 +94,25 @@ export function useCollaboration(
             return;
         }
 
+        // Gate: live collaboration is disabled by default due to a known
+        // data-loss bug — a remote edit arriving within the local sync debounce
+        // window can drop a peer's concurrent change and leave the two clients'
+        // documents permanently divergent (`syncEngine._applyRemote`). Require
+        // an explicit `experimental: true` acknowledgement before connecting.
+        if (!config.experimental) {
+            console.warn(
+                '[f1ow] Live collaboration is disabled by default: a known data-loss bug ' +
+                    'can drop concurrent edits made within the sync debounce window and leave ' +
+                    'peers permanently divergent. Set `collaboration.experimental = true` to ' +
+                    'enable it at your own risk (not production-ready).',
+            );
+            managerRef.current?.dispose();
+            managerRef.current = null;
+            setConnectionStatus('disconnected');
+            setPeers([]);
+            return;
+        }
+
         let cancelled = false;
         let cleanup: (() => void) | null = null;
 
@@ -157,6 +176,7 @@ export function useCollaboration(
         config?.serverUrl,
         config?.roomName,
         config?.user.id,
+        config?.experimental,
         store,
         // eslint-disable-next-line react-hooks/exhaustive-deps
         config?.syncDebounceMs,

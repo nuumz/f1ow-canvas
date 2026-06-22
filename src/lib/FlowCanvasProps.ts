@@ -280,6 +280,11 @@ export interface FlowCanvasProps {
     /**
      * Enable real-time CRDT collaboration.
      * Pass a `CollaborationConfig` to connect, or `undefined`/`null` to disable.
+     *
+     * ⚠️ Live collaboration is currently EXPERIMENTAL and disabled by default
+     * due to a known data-loss bug under concurrent edits within the sync
+     * debounce window. You must set `collaboration.experimental = true` to opt
+     * in; otherwise a warning is logged and sync does not start.
      */
     collaboration?: CollaborationConfig | null;
 

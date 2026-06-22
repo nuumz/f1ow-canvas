@@ -50,7 +50,7 @@ const DiamondShape: React.FC<Props> = ({ element, isSelected, isGrouped, onSelec
         const newW = Math.max(5, width * sx);
         const newH = Math.max(5, height * sy);
         node.setAttrs({ scaleX: 1, scaleY: 1, points: getDiamondPoints(newW, newH) });
-        onDragMove?.(id, { x: node.x(), y: node.y(), width: newW, height: newH });
+        onDragMove?.(id, { x: node.x(), y: node.y(), width: newW, height: newH, rotation: node.rotation() });
     }, [id, width, height, onDragMove]);
 
     const handleTransformEnd = useCallback((e: any) => {
