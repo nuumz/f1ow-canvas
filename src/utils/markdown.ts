@@ -10,11 +10,11 @@ import { marked } from 'marked';
 function decodeHtmlEntities(text: string): string {
     return text
         .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'");
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&');
 }
 
 export function htmlToPlainText(html: string): string {
