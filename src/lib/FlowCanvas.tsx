@@ -58,8 +58,9 @@ import type { ContextMenuItem } from '../components/ContextMenu/ContextMenu';
 import { setClipboard, getClipboard, hasClipboardContent } from '../utils/clipboard';
 import { cloneAndRemapElements, gatherElementsForCopy } from '../utils/clone';
 import { exportToSVG } from '../utils/export';
-import { computeAlignGuides } from '../utils/alignment';
+import { computeAlignGuides, computeMultiSelectAlignSnap } from '../utils/alignment';
 import type { AlignGuide } from '../utils/alignment';
+import { computeNextSelection } from '../utils/selection';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useViewportCulling } from '../hooks/useViewportCulling';
 import { useSpatialIndex } from '../hooks/useSpatialIndex';
@@ -505,10 +506,14 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         collaboration: collaborationConfig,
         workerConfig,
         customElementTypes,
+        connectionConfig,
         store: storeProp,
         renderer,
         rendererOptions,
     } = props;
+
+    const snapThreshold = connectionConfig?.snapThreshold ?? 24;
+    const hysteresisMargin = connectionConfig?.hysteresisMargin ?? 6;
 
     // ─── Store instance (multi-instance support) ─────────────
     // When a `store` prop is supplied via `createCanvasStore()`, this
@@ -639,8 +644,10 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     // ─── Alignment guides state ───────────────────────────────
     const [alignGuides, setAlignGuides] = useState<AlignGuide[]>([]);
 
-    // Shift key tracking (for symmetric / angle-constrained drawing)
+    // Modifier key tracking (Shift: constrain draw / additive select;
+    // Cmd/Ctrl: additive select)
     const shiftKeyRef = useRef(false);
+    const metaKeyRef = useRef(false);
 
     // Right-click tracking — Konva fires `click` for right-click too
     // (unlike DOM click which is left-button only). We need to suppress
@@ -1144,8 +1151,9 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
     }, [selectedIds, onSelectionChange]);
 
     // ─── Auto-exit linear edit on deselection / tool change ───
-    // Enter is handled synchronously in handleElementSelect.
-    // This effect covers edge cases: selection-box, Ctrl+A, tool change, etc.
+    // Point-edit is entered via double-click (or immediately after creating
+    // a connector in LinearTool). This effect only exits when selection/tool
+    // no longer matches the editing element.
     useEffect(() => {
         const linState = useLinearEditStore.getState();
         if (!linState.isEditing) return;
@@ -1159,30 +1167,30 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         // Exit if the editing element is no longer the sole selection
         if (selectedIds.length !== 1 || selectedIds[0] !== linState.elementId) {
             linState.exitEditMode();
-            return;
         }
+    }, [selectedIds, activeTool]);
 
-        // Auto-enter for creation path (line created → setActiveTool('select'))
-        // When the line is selected and activeTool just became 'select',
-        // the synchronous path didn’t run because it went through setSelectedIds
-        // + setActiveTool (not handleElementSelect). Enter now.
-        const el = elements.find(e => e.id === selectedIds[0]);
-        if (el && (el.type === 'line' || el.type === 'arrow')) {
-            if (!linState.isEditing || linState.elementId !== el.id) {
-                linState.enterEditMode(el.id);
-            }
-        }
-    }, [selectedIds, activeTool, elements]);
-
-    // Shift key listener (for symmetric drawing)
+    // Modifier key listeners (Shift + Cmd/Ctrl)
     useEffect(() => {
-        const onDown = (e: KeyboardEvent) => { if (e.key === 'Shift') shiftKeyRef.current = true; };
-        const onUp = (e: KeyboardEvent) => { if (e.key === 'Shift') shiftKeyRef.current = false; };
+        const onDown = (e: KeyboardEvent) => {
+            if (e.key === 'Shift') shiftKeyRef.current = true;
+            if (e.key === 'Meta' || e.key === 'Control') metaKeyRef.current = true;
+        };
+        const onUp = (e: KeyboardEvent) => {
+            if (e.key === 'Shift') shiftKeyRef.current = false;
+            if (e.key === 'Meta' || e.key === 'Control') metaKeyRef.current = false;
+        };
+        const onBlur = () => {
+            shiftKeyRef.current = false;
+            metaKeyRef.current = false;
+        };
         window.addEventListener('keydown', onDown);
         window.addEventListener('keyup', onUp);
+        window.addEventListener('blur', onBlur);
         return () => {
             window.removeEventListener('keydown', onDown);
             window.removeEventListener('keyup', onUp);
+            window.removeEventListener('blur', onBlur);
         };
     }, []);
 
@@ -1408,6 +1416,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         currentElementIdRef,
         shiftKeyRef,
         startBindingRef,
+        snapThreshold,
+        hysteresisMargin,
         setSnapTarget,
         selectionBox,
         setSelectionBox,
@@ -1656,33 +1666,19 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
             // Record this click for future dblclick detection
             lastClickRef.current = { id, time: now };
 
-            // Synchronous enter/exit linear edit mode — avoids 1-frame
-            // flash of SelectionTransformer on line/arrow elements.
-            const el = elements.find(e => e.id === id);
-            const isLinear = el && (el.type === 'line' || el.type === 'arrow');
+            const additive = shiftKeyRef.current || metaKeyRef.current;
+            const nextIds = computeNextSelection(elements, currentSelectedIds, id, additive);
+            setSelectedIds(nextIds);
 
+            /*
+             * Single-click never enters linear point-edit (double-click does).
+             * Exit edit mode when the sole editing target is no longer selected alone.
+             */
             const linearState = useLinearEditStore.getState();
-            if (isLinear) {
-                // Enter edit mode immediately (before render)
-                if (!linearState.isEditing || linearState.elementId !== id) {
-                    linearState.enterEditMode(id);
-                }
-            } else {
-                // Exit edit mode if selecting a non-linear element
-                if (linearState.isEditing) {
+            if (linearState.isEditing) {
+                if (nextIds.length !== 1 || nextIds[0] !== linearState.elementId) {
                     linearState.exitEditMode();
                 }
-            }
-
-            // Group-aware selection: select all members of the outermost group
-            if (el?.groupIds?.length) {
-                const outermostGroupId = el.groupIds[el.groupIds.length - 1];
-                const groupMembers = elements
-                    .filter(e => e.groupIds?.includes(outermostGroupId))
-                    .map(e => e.id);
-                setSelectedIds(groupMembers);
-            } else {
-                setSelectedIds([id]);
             }
         },
         [readOnly]
@@ -1892,19 +1888,46 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
         [readOnly, flushDragBatch, syncBoundTextNodes]
     );
 
-    // Alignment snap callback: shapes call this during drag to get snapped position + show guides
-    // PERF: Skip alignment computation during multi-select drag.
-    // Each selected shape independently calls this callback during drag,
-    // resulting in N × O(total) computeAlignGuides calls per frame.
-    // Alignment snapping for multi-drag is also semantically wrong
-    // (you want to snap the group, not individual shapes).
+    // Alignment snap: single-select uses per-element guides; multi-select snaps
+    // the selection AABB as one unit and reuses the delta for every per-element
+    // call in the same frame (microtask-cleared cache).
+    const multiDragSnapCacheRef = useRef<{
+        dx: number;
+        dy: number;
+        guides: AlignGuide[];
+    } | null>(null);
+    const multiDragSnapClearScheduledRef = useRef(false);
+
     const handleDragSnap = useCallback(
         (id: string, bounds: { x: number; y: number; width: number; height: number }): { x: number; y: number } | null => {
             const { elements: els, selectedIds: selIds } = useCanvasStore.getState();
 
-            // Skip when dragging multiple elements — each would compute
-            // independently (wrong) and the O(n²) cost is prohibitive
-            if (selIds.length > 1) return null;
+            if (selIds.length > 1) {
+                if (!multiDragSnapCacheRef.current) {
+                    const snap = computeMultiSelectAlignSnap(id, bounds, els, selIds);
+                    multiDragSnapCacheRef.current = {
+                        dx: snap.dx,
+                        dy: snap.dy,
+                        guides: snap.guides,
+                    };
+                    setAlignGuides(snap.guides);
+                    if (!multiDragSnapClearScheduledRef.current) {
+                        multiDragSnapClearScheduledRef.current = true;
+                        queueMicrotask(() => {
+                            multiDragSnapCacheRef.current = null;
+                            multiDragSnapClearScheduledRef.current = false;
+                        });
+                    }
+                }
+                const cached = multiDragSnapCacheRef.current;
+                if (!cached || (cached.dx === 0 && cached.dy === 0)) {
+                    return null;
+                }
+                return {
+                    x: bounds.x + cached.dx,
+                    y: bounds.y + cached.dy,
+                };
+            }
 
             const excludeIds = new Set(selIds);
             const result = computeAlignGuides(bounds, els, excludeIds);
@@ -2087,57 +2110,62 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                 return;
             }
 
-            // Linear elements → create/edit text label (point edit via single click)
+            // Linear elements:
+            //   double-click → point-edit mode
+            //   Shift+double-click → create/edit connector label
             if (el.type === 'line' || el.type === 'arrow') {
-                // Check if already has a bound text element
-                const existingTextBinding = el.boundElements?.find(be => be.type === 'text');
-                if (existingTextBinding) {
-                    setSel([existingTextBinding.id, id]);
-                    setAutoEditTextId(existingTextBinding.id);
+                if (shiftKeyRef.current) {
+                    const existingTextBinding = el.boundElements?.find(be => be.type === 'text');
+                    if (existingTextBinding) {
+                        setSel([existingTextBinding.id, id]);
+                        setAutoEditTextId(existingTextBinding.id);
+                        return;
+                    }
+
+                    /*
+                     * Use the RESOLVED connector (with recomputed bound points)
+                     * rather than the raw store element so the label midpoint
+                     * matches the visual path.
+                     */
+                    const textId = generateId();
+                    const resolved = resolvedMapRef.current.get(id) as LineElement | ArrowElement | undefined;
+                    const conn = (resolved ?? el) as LineElement | ArrowElement;
+                    const labelPos = computeConnectorLabelPosition(conn, 100, 30);
+
+                    const textEl: TextElement = {
+                        id: textId,
+                        type: 'text',
+                        x: labelPos.x,
+                        y: labelPos.y,
+                        width: 100,
+                        height: 30,
+                        rotation: 0,
+                        style: { ...style, fillColor: 'transparent' },
+                        isLocked: false,
+                        isVisible: true,
+                        boundElements: null,
+                        text: '',
+                        containerId: id,
+                        textAlign: 'center',
+                        verticalAlign: 'middle',
+                        version: 0,
+                    };
+
+                    add(textEl);
+                    onElementCreate?.(textEl);
+
+                    const currentBound = el.boundElements ?? [];
+                    update(id, {
+                        boundElements: [...currentBound, { id: textId, type: 'text' }],
+                    });
+
+                    setSel([textId, id]);
+                    setAutoEditTextId(textId);
                     return;
                 }
 
-                // Create new bound text at midpoint.
-                // Use the RESOLVED connector (with recomputed bound points)
-                // rather than the raw store element.  When a connector has
-                // start/end bindings, recomputeBoundPoints adjusts its x/y
-                // and points during render.  The store still holds the old
-                // values, so computing the midpoint from the store element
-                // gives a stale position that doesn't match the visual.
-                const textId = generateId();
-                const resolved = resolvedMapRef.current.get(id) as LineElement | ArrowElement | undefined;
-                const conn = (resolved ?? el) as LineElement | ArrowElement;
-                const labelPos = computeConnectorLabelPosition(conn, 100, 30);
-
-                const textEl: TextElement = {
-                    id: textId,
-                    type: 'text',
-                    x: labelPos.x,
-                    y: labelPos.y,
-                    width: 100,
-                    height: 30,
-                    rotation: 0,
-                    style: { ...style, fillColor: 'transparent' },
-                    isLocked: false,
-                    isVisible: true,
-                    boundElements: null,
-                    text: '',
-                    containerId: id,
-                    textAlign: 'center',
-                    verticalAlign: 'middle',
-                    version: 0,
-                };
-
-                add(textEl);
-                onElementCreate?.(textEl);
-
-                const currentBound = el.boundElements ?? [];
-                update(id, {
-                    boundElements: [...currentBound, { id: textId, type: 'text' }],
-                });
-
-                setSel([textId, id]);
-                setAutoEditTextId(textId);
+                setSel([id]);
+                useLinearEditStore.getState().enterEditMode(id);
                 return;
             }
 
@@ -2902,6 +2930,8 @@ const FlowCanvas = forwardRef<FlowCanvasRef, FlowCanvasProps>((props, ref) => {
                                     onPointDragMove={handleLinearPointDragMove}
                                     onSnapTargetChange={handleLinearSnapTargetChange}
                                     color={theme.selectionColor}
+                                    snapThreshold={snapThreshold}
+                                    hysteresisMargin={hysteresisMargin}
                                 />
                             );
                         })()}

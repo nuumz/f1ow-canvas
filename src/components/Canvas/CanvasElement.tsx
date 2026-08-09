@@ -10,6 +10,7 @@ import FreeDrawShape from '../shapes/FreeDrawShape';
 import TextShape from '../shapes/TextShape';
 import TextLabel from '../shapes/TextLabel';
 import ImageShape from '../shapes/ImageShape';
+import { elementRegistry } from '../../utils/elementRegistry';
 
 // ─── LOD (Level of Detail) thresholds ─────────────────────────
 // Screen-space pixels (element's max dimension × viewport scale).
@@ -141,8 +142,30 @@ const CanvasElementRenderer: React.FC<Props> = ({
         }
         case 'image':
             return <ImageShape element={element} isSelected={isSelected} isGrouped={isGrouped} onSelect={onSelect} onChange={onChange} onDragMove={onDragMove} onDoubleClick={onDoubleClick} gridSnap={gridSnap} onDragSnap={onDragSnap} />;
-        default:
+        default: {
+            /*
+             * Built-in types are exhausted above; remaining values are custom
+             * plugin types registered at runtime (outside the CanvasElement union).
+             */
+            const customEl = element as CanvasElement & { type: string };
+            const custom = elementRegistry.getCustomConfig(customEl.type);
+            if (custom?.render) {
+                return custom.render(customEl as never, {
+                    isSelected,
+                    isEditing,
+                    isGrouped,
+                    onSelect,
+                    onChange,
+                    onDragMove,
+                    onDoubleClick,
+                    gridSnap,
+                    onDragSnap,
+                    allElements,
+                    viewportScale,
+                });
+            }
             return null;
+        }
     }
 };
 

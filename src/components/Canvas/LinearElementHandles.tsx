@@ -64,6 +64,10 @@ interface Props {
     onSnapTargetChange?: (target: SnapTarget | null) => void;
     /** Accent color */
     color?: string;
+    /** Edge snap outer threshold (px). Default 24. */
+    snapThreshold?: number;
+    /** Edge/center hysteresis margin (px). Default 6. */
+    hysteresisMargin?: number;
 }
 
 const LinearElementHandles: React.FC<Props> = ({
@@ -73,6 +77,8 @@ const LinearElementHandles: React.FC<Props> = ({
     onPointDragMove,
     onSnapTargetChange,
     color = '#4f8df7',
+    snapThreshold = 24,
+    hysteresisMargin = 6,
 }) => {
     const {
         selectedPointIndices,
@@ -190,7 +196,17 @@ const LinearElementHandles: React.FC<Props> = ({
                 // automatically determines isPrecise based on cursor proximity
                 // to shape edge vs center.
                 const dragGap = computeBindingGap(element.style.strokeWidth ?? 2);
-                const snap = findNearestSnapTarget(worldPt, allElements, 24, excludeIds, undefined, undefined, dragGap, lastSnapIsPreciseRef.current);
+                const snap = findNearestSnapTarget(
+                    worldPt,
+                    allElements,
+                    snapThreshold,
+                    excludeIds,
+                    undefined,
+                    undefined,
+                    dragGap,
+                    lastSnapIsPreciseRef.current,
+                    hysteresisMargin,
+                );
                 onSnapTargetChange?.(snap);
                 lastSnapIsPreciseRef.current = snap?.isPrecise;
 
@@ -231,7 +247,7 @@ const LinearElementHandles: React.FC<Props> = ({
             // entry/exit direction during drag preview.
             onPointDragMove?.(id, { points: newPoints, x, y, ...bindingUpdates });
         },
-        [points, x, y, id, element, allElements, isEndpoint, onPointDragMove, onSnapTargetChange],
+        [points, x, y, id, element, allElements, isEndpoint, onPointDragMove, onSnapTargetChange, snapThreshold, hysteresisMargin],
     );
 
     // ── Point Drag End ────────────────────────────────────────
@@ -273,7 +289,17 @@ const LinearElementHandles: React.FC<Props> = ({
                 // automatically determines isPrecise based on cursor proximity
                 // to shape edge vs center.
                 const endGap = computeBindingGap(element.style.strokeWidth ?? 2);
-                const snap = findNearestSnapTarget(worldPt, allElements, 24, excludeIds, undefined, undefined, endGap, lastSnapIsPreciseRef.current);
+                const snap = findNearestSnapTarget(
+                    worldPt,
+                    allElements,
+                    snapThreshold,
+                    excludeIds,
+                    undefined,
+                    undefined,
+                    endGap,
+                    lastSnapIsPreciseRef.current,
+                    hysteresisMargin,
+                );
                 onSnapTargetChange?.(null);
                 lastSnapIsPreciseRef.current = undefined;
 
@@ -326,7 +352,7 @@ const LinearElementHandles: React.FC<Props> = ({
             onPointsChange(id, updates);
             dragStartRef.current = null;
         },
-        [points, x, y, id, pairs, element, allElements, isEndpoint, setIsDraggingPoint, onPointsChange, onSnapTargetChange],
+        [points, x, y, id, pairs, element, allElements, isEndpoint, setIsDraggingPoint, onPointsChange, onSnapTargetChange, snapThreshold, hysteresisMargin],
     );
 
     // ── Point Click (select) ──────────────────────────────────

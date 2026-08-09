@@ -28,7 +28,6 @@ interface Props {
 
 const LineShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped, onSelect, onChange, onDragMove, onDoubleClick, gridSnap, allElements }) => {
     const { id, x, y, points, rotation, style, startBinding, endBinding, lineType, isLocked } = element;
-    const isDraggable = !isLocked && !isGrouped;
     const groupRef = useRef<Konva.Group>(null);
     const lineRef = useRef<Konva.Line>(null);
     const roughness = style.roughness;
@@ -37,7 +36,14 @@ const LineShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped,
     // Flow animation — animates dashOffset on the main line
     useFlowAnimation(lineRef, flowEnabled);
 
-    // Prevent drag when bound to shapes (binding auto-recomputes position)
+    /*
+     * Bound connectors are positioned by recomputeBoundPoints every frame.
+     * Whole-group drag fights that recompute (rubber-band / snap-back) until
+     * an unbind fires — disable drag when bound or while point-editing.
+     * Unbound lines remain freely movable when not in edit mode.
+     */
+    const isBound = !!(startBinding || endBinding);
+    const isDraggable = !isLocked && !isGrouped && !isEditing && !isBound;
     const isCurved = lineType === 'curved';
     const isElbow = lineType === 'elbow';
 

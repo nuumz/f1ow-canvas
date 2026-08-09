@@ -74,7 +74,17 @@ function finalizeLinear(ctx: ToolContext): void {
             const excludeIds = new Set([el.id]);
             if (el.startBinding) excludeIds.add(el.startBinding.elementId);
             const endGapFinal = computeBindingGap(el.style.strokeWidth ?? 2);
-            const endSnap = findNearestSnapTarget(rawEndPos, ctx.elements, 24, excludeIds, undefined, undefined, endGapFinal, _lastSnapIsPrecise);
+            const endSnap = findNearestSnapTarget(
+                rawEndPos,
+                ctx.elements,
+                ctx.snapThreshold,
+                excludeIds,
+                undefined,
+                undefined,
+                endGapFinal,
+                _lastSnapIsPrecise,
+                ctx.hysteresisMargin,
+            );
 
             const endGap = computeBindingGap(el.style.strokeWidth ?? 2);
             const endBind: Binding | null = endSnap
@@ -116,7 +126,14 @@ function finalizeLinear(ctx: ToolContext): void {
             ctx.startBindingRef.current = null;
             ctx.setSnapTarget(null);
 
-            ctx.setSelectedIds([ctx.currentElementIdRef.current!]);
+            const createdId = ctx.currentElementIdRef.current!;
+            ctx.setSelectedIds([createdId]);
+            /*
+             * Enter point-edit immediately after creating a connector so the
+             * user can tune endpoints; existing connectors enter edit only
+             * via double-click (see FlowCanvas handleElementDoubleClick).
+             */
+            ctx.linearEdit.enterEditMode(createdId);
             // Resume history then push one single atomic entry for the whole draw.
             ctx.store.getState().resumeHistory();
             ctx.pushHistory();
@@ -146,7 +163,17 @@ export const linearTool: ToolHandler = {
 
         // Snap start to nearby shape anchor
         const gap = computeBindingGap(ctx.currentStyle.strokeWidth ?? 2);
-        const snap = findNearestSnapTarget(pos, ctx.elements, 24, undefined, undefined, undefined, gap);
+        const snap = findNearestSnapTarget(
+            pos,
+            ctx.elements,
+            ctx.snapThreshold,
+            undefined,
+            undefined,
+            undefined,
+            gap,
+            undefined,
+            ctx.hysteresisMargin,
+        );
         let startPt = pos;
         let startBind: Binding | null = null;
 
@@ -199,7 +226,17 @@ export const linearTool: ToolHandler = {
         // Show snap preview when hovering (before drawing)
         if (!ctx.isDrawing) {
             const hoverGap = computeBindingGap(ctx.currentStyle.strokeWidth ?? 2);
-            const snap = findNearestSnapTarget(pos, ctx.elements, 24, undefined, undefined, undefined, hoverGap);
+            const snap = findNearestSnapTarget(
+                pos,
+                ctx.elements,
+                ctx.snapThreshold,
+                undefined,
+                undefined,
+                undefined,
+                hoverGap,
+                undefined,
+                ctx.hysteresisMargin,
+            );
             ctx.setSnapTarget(snap);
             return;
         }
@@ -218,10 +255,15 @@ export const linearTool: ToolHandler = {
         if (el.startBinding) excludeIds.add(el.startBinding.elementId);
         const endGap = computeBindingGap(el.style.strokeWidth ?? 2);
         const snap = findNearestSnapTarget(
-            pos, ctx.elements, 24, excludeIds,
+            pos,
+            ctx.elements,
+            ctx.snapThreshold,
+            excludeIds,
             { x: el.x, y: el.y },
-            undefined, endGap,
+            undefined,
+            endGap,
             _lastSnapIsPrecise,
+            ctx.hysteresisMargin,
         );
         ctx.setSnapTarget(snap);
         _lastSnapIsPrecise = snap?.isPrecise;

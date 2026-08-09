@@ -101,7 +101,11 @@ export { LABEL_PADDING_H, LABEL_PADDING_V, LABEL_CORNER, LABEL_LINE_HEIGHT, LABE
 
 // Element registry — custom type registration & validation
 export { elementRegistry, registerCustomElement } from '../utils/elementRegistry';
-export type { CustomElementConfig, ValidationResult } from '../utils/elementRegistry';
+export type {
+    CustomElementConfig,
+    CustomElementRenderProps,
+    ValidationResult,
+} from '../utils/elementRegistry';
 
 // Elbow routing utilities
 export {

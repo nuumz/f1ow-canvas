@@ -39,7 +39,14 @@ function resolveArrowheads(el: ArrowElement): { start: ArrowElement['startArrowh
 
 const ArrowShape: React.FC<Props> = ({ element, isSelected, isEditing, isGrouped, onSelect, onChange, onDragMove, onDoubleClick, gridSnap, allElements }) => {
     const { id, x, y, points, rotation, style, startBinding, endBinding, lineType, isLocked } = element;
-    const isDraggable = !isLocked && !isGrouped;
+    /*
+     * Bound connectors are positioned by recomputeBoundPoints every frame.
+     * Whole-group drag fights that recompute (rubber-band / snap-back) until
+     * an unbind fires — disable drag when bound or while point-editing.
+     * Unbound arrows remain freely movable when not in edit mode.
+     */
+    const isBound = !!(startBinding || endBinding);
+    const isDraggable = !isLocked && !isGrouped && !isEditing && !isBound;
     const groupRef = useRef<Konva.Group>(null);
     const lineRef = useRef<Konva.Line>(null);
     const roughness = style.roughness;

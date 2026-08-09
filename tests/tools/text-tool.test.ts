@@ -56,6 +56,8 @@ function createContext(elements: CanvasElement[]) {
         currentElementIdRef: { current: null },
         shiftKeyRef: { current: false },
         startBindingRef: { current: null },
+        snapThreshold: 24,
+        hysteresisMargin: 6,
         setSnapTarget: vi.fn(),
         selectionBox: null,
         setSelectionBox: vi.fn(),

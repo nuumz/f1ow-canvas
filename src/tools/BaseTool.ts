@@ -60,6 +60,12 @@ export interface ToolContext {
     shiftKeyRef: React.MutableRefObject<boolean>;
     startBindingRef: React.MutableRefObject<Binding | null>;
 
+    // ─── Connection snap tuning (from FlowCanvasProps.connectionConfig) ─
+    /** Distance outside shape perimeter to activate edge snap (px). Default 24. */
+    snapThreshold: number;
+    /** Hysteresis margin for edge/center mode switching (px). Default 6. */
+    hysteresisMargin: number;
+
     // ─── Snap / Selection State (setters from FlowCanvas) ─────
     setSnapTarget: (snap: SnapTarget | null) => void;
     selectionBox: { x: number; y: number; width: number; height: number } | null;

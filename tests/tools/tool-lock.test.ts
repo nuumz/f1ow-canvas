@@ -35,6 +35,8 @@ function makeCtx(store: ReturnType<typeof createCanvasStore>): ToolContext {
         currentElementIdRef: { current: null },
         shiftKeyRef: { current: false },
         startBindingRef: { current: null },
+        snapThreshold: 24,
+        hysteresisMargin: 6,
         setSnapTarget: () => {},
         selectionBox: null,
         setSelectionBox: () => {},

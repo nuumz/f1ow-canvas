@@ -19,6 +19,7 @@
  *   displayName: 'Sticky Note',
  *   validate: (el) => typeof el.content === 'string' || 'content must be a string',
  *   defaults: { content: '', color: '#ffeb3b' },
+ *   render: (el, props) => <StickyNoteShape element={el} {...props} />,
  * });
  * ```
  *
@@ -28,10 +29,14 @@
  *   customElementTypes={[{
  *     type: 'sticky-note',
  *     validate: (el) => typeof el.content === 'string' || 'content must be a string',
+ *     render: (el, props) => <StickyNoteShape element={el} {...props} />,
  *   }]}
  * />
  * ```
  */
+
+import type { ReactNode } from 'react';
+import type { CanvasElement } from '@/types';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -39,6 +44,27 @@
 export type ValidationResult =
     | { valid: true }
     | { valid: false; error: string };
+
+/**
+ * Props forwarded from `CanvasElement` into a custom element's `render`.
+ * Mirrors the shared shape interaction surface (select / change / drag).
+ */
+export interface CustomElementRenderProps {
+    isSelected: boolean;
+    isEditing?: boolean;
+    isGrouped?: boolean;
+    onSelect: (id: string) => void;
+    onChange: (id: string, updates: Partial<CanvasElement>) => void;
+    onDragMove?: (id: string, updates: Partial<CanvasElement>) => void;
+    onDoubleClick?: (id: string) => void;
+    gridSnap?: number;
+    onDragSnap?: (
+        id: string,
+        bounds: { x: number; y: number; width: number; height: number },
+    ) => { x: number; y: number } | null;
+    allElements?: CanvasElement[];
+    viewportScale?: number;
+}
 
 /**
  * Configuration object for a custom element type.
@@ -79,6 +105,16 @@ export interface CustomElementConfig<
      * Default: `false`.
      */
     allowOverride?: boolean;
+
+    /**
+     * Optional Konva/React renderer for this custom type.
+     * Without `render`, custom elements validate and store correctly but
+     * remain invisible on the canvas (`CanvasElement` returns `null`).
+     */
+    render?: (
+        element: CanvasElement & T,
+        props: CustomElementRenderProps,
+    ) => ReactNode;
 }
 
 // ─── Internal constants ───────────────────────────────────────────────────────
@@ -139,6 +175,11 @@ class ElementRegistryClass {
     /** Retrieve the custom config for a type (undefined for built-in types). */
     getCustomConfig(type: string): CustomElementConfig | undefined {
         return this.customs.get(type);
+    }
+
+    /** Remove a custom type registration (no-op for built-ins / unknown types). */
+    unregister(type: string): void {
+        this.customs.delete(type);
     }
 
     /** All registered type names, built-in first then custom. */

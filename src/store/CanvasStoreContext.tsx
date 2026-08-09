@@ -16,14 +16,12 @@
  * <CanvasStoreProvider store={storeB}><FlowCanvas /></CanvasStoreProvider>
  * ```
  *
- * Status: tools (`src/tools/*`) now act through the resolved per-instance
- * store via `ToolContext.store`, the keyboard-shortcut hook receives the
- * resolved store as a parameter, and each FlowCanvas owns its own elbow
- * routing worker + per-stage `pixelRatio` — so those subsystems are fully
- * isolated per instance. The remaining singleton consumer is the
- * collaboration sync bridge (`useCollaboration`), which still subscribes to
- * the module-level store; threading the resolved store into it is the final
- * (Phase 3) step toward complete multi-instance isolation.
+ * Status: tools (`src/tools/*`) act through the resolved per-instance store
+ * via `ToolContext.store`, the keyboard-shortcut hook receives the resolved
+ * store as a parameter, and each FlowCanvas owns its own elbow routing worker
+ * + per-stage `pixelRatio`. Remaining shared singletons: collaboration sync
+ * bridge (partially store-aware), module clipboard helpers, and
+ * `useLinearEditStore`.
  */
 import { createContext, useContext, type ReactNode } from 'react';
 import { useCanvasStore, type CanvasStore } from './useCanvasStore';

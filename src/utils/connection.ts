@@ -561,6 +561,7 @@ export function findNearestSnapTarget(
     forcePrecise?: boolean,
     gap = BOUND_ARROW_OFFSET,
     prevIsPrecise?: boolean,
+    hysteresisMargin: number = HYSTERESIS_MARGIN,
 ): SnapTarget | null {
     let best: SnapTarget | null = null;
     let bestDist = Infinity;
@@ -618,11 +619,11 @@ export function findNearestSnapTarget(
                     if (prevIsPrecise === true) {
                         // Was edge (precise) → require moving deeper inside
                         // to switch to center: use a wider band
-                        useEdge = edgeDist <= effectiveBand + HYSTERESIS_MARGIN;
+                        useEdge = edgeDist <= effectiveBand + hysteresisMargin;
                     } else if (prevIsPrecise === false) {
                         // Was center (imprecise) → require moving closer to
                         // edge to switch back: use a narrower band
-                        useEdge = edgeDist <= Math.max(0, effectiveBand - HYSTERESIS_MARGIN);
+                        useEdge = edgeDist <= Math.max(0, effectiveBand - hysteresisMargin);
                     } else {
                         // No previous state → use standard threshold
                         useEdge = edgeDist <= effectiveBand;

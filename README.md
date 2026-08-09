@@ -37,7 +37,7 @@
 - **Zero CSS Dependencies** — No external stylesheets required. Inline styled.
 - **TypeScript** — Full type safety with strict mode.
 
-> **Multi-instance support (preview):** `createCanvasStore()` and `<CanvasStoreProvider>` let React subscribers (`<FlowCanvas>`, toolbar, style panel, overlays) operate on independent stores. Tools, keyboard shortcuts, and the collaboration sync bridge still read from the singleton store via `getState()`, so full per-instance isolation across those subsystems is a follow-up phase. Until then, mounting multiple editable `<FlowCanvas>` instances on the same page is supported for layout/preview use cases but tool input and collaboration target the singleton.
+> **Multi-instance support (preview):** `createCanvasStore()` / `store` prop and `<CanvasStoreProvider>` isolate canvas state, tools, and keyboard shortcuts per instance. Remaining shared singletons: collaboration sync bridge (unless wired to the instance store), module clipboard helpers, and `useLinearEditStore`. Custom element plugins must supply a `render` callback to appear on the canvas.
 >
 > **Optional collaboration peers:** `yjs` and `y-websocket` are loaded via dynamic `import()` and ship in separate chunks. Apps that never enable collaboration do not need either package installed when consuming the ESM build. Lower-level CRDT APIs (`createCollaborationProvider`, `startSync`, `CollaborationManager`, codec helpers) live under the `f1ow/collaboration` subpath; the root `f1ow` entry only re-exports types, the `useCollaboration` hook (lazy), and `CursorOverlay`.
 

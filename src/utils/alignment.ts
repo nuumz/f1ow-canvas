@@ -4,7 +4,7 @@
  * Detects when a dragged element's edges/center align with other elements
  * and returns snap positions + guide lines to render.
  */
-import type { CanvasElement, Point } from '@/types';
+import type { CanvasElement, TextElement } from '@/types';
 
 /** Threshold in canvas pixels for snapping to alignment guides */
 const SNAP_THRESHOLD = 5;
@@ -186,4 +186,88 @@ export function computeAlignGuides(
     }
 
     return result;
+}
+
+export interface MultiSelectAlignSnap {
+    /** Delta to apply to every selected element's position */
+    dx: number;
+    dy: number;
+    guides: AlignGuide[];
+}
+
+/**
+ * Snap a multi-selection as one unit using the union AABB.
+ *
+ * `movingBounds` is the live (Konva) bounds of the element currently
+ * reporting drag; other selected elements are projected by the same
+ * live delta from their store positions so the union tracks the group.
+ */
+export function computeMultiSelectAlignSnap(
+    movingId: string,
+    movingBounds: { x: number; y: number; width: number; height: number },
+    elements: CanvasElement[],
+    selectedIds: string[],
+    threshold = SNAP_THRESHOLD,
+): MultiSelectAlignSnap {
+    const excludeIds = new Set(selectedIds);
+    const selSet = new Set(selectedIds);
+    const movingEl = elements.find((e) => e.id === movingId);
+    if (!movingEl) {
+        return { dx: 0, dy: 0, guides: [] };
+    }
+
+    const liveDx = movingBounds.x - movingEl.x;
+    const liveDy = movingBounds.y - movingEl.y;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let count = 0;
+
+    for (const el of elements) {
+        if (!selSet.has(el.id)) continue;
+        if (el.type === 'text' && (el as TextElement).containerId) continue;
+
+        let left: number;
+        let top: number;
+        let right: number;
+        let bottom: number;
+
+        if (el.id === movingId) {
+            left = movingBounds.x;
+            top = movingBounds.y;
+            right = movingBounds.x + movingBounds.width;
+            bottom = movingBounds.y + movingBounds.height;
+        } else {
+            const b = getBounds(el);
+            left = b.left + liveDx;
+            top = b.top + liveDy;
+            right = b.right + liveDx;
+            bottom = b.bottom + liveDy;
+        }
+
+        minX = Math.min(minX, left);
+        minY = Math.min(minY, top);
+        maxX = Math.max(maxX, right);
+        maxY = Math.max(maxY, bottom);
+        count++;
+    }
+
+    if (count === 0 || !Number.isFinite(minX)) {
+        return { dx: 0, dy: 0, guides: [] };
+    }
+
+    const union = {
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY,
+    };
+    const result = computeAlignGuides(union, elements, excludeIds, threshold);
+    return {
+        dx: result.x !== undefined ? result.x - union.x : 0,
+        dy: result.y !== undefined ? result.y - union.y : 0,
+        guides: result.guides,
+    };
 }

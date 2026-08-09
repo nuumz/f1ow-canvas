@@ -297,10 +297,9 @@ export interface FlowCanvasProps {
      * isolated store instead of the module-level singleton, allowing
      * multiple canvases to coexist on the same page without cross-talk.
      *
-     * Note: tools, keyboard shortcuts, and the collaboration sync bridge
-     * still read from the singleton via `getState()`. Until that wiring
-     * is migrated, those subsystems target the singleton even when this
-     * prop is supplied.
+     * Tools and keyboard shortcuts use this resolved store. Remaining
+     * per-page singletons: collaboration sync bridge (unless passed the
+     * store), module clipboard helpers, and `useLinearEditStore`.
      */
     store?: CanvasStore;
     // ─── Plugin / Extension ───────────────────────────────────────────────
@@ -311,6 +310,8 @@ export interface FlowCanvasProps {
      * Each config is passed to `elementRegistry.register()` once on mount.
      * Custom types go through the same validation pipeline as built-in types;
      * the optional `validate` callback handles type-specific field checks.
+     * Provide `render` to draw the type on canvas — without it, elements
+     * store/validate but are invisible.
      *
      * @example
      * ```tsx
@@ -321,6 +322,7 @@ export interface FlowCanvasProps {
      *     validate: (el) =>
      *       typeof el.content === 'string' || 'content must be a string',
      *     defaults: { content: '', color: '#ffeb3b' },
+     *     render: (el, props) => <StickyNoteShape element={el} {...props} />,
      *   }]}
      * />
      * ```
@@ -331,15 +333,18 @@ export interface FlowCanvasProps {
 
     /**
      * Configure the connection/binding system behavior.
-     * Controls snap thresholds, port visibility, default line styles, and more.
+     *
+     * Currently wired: `snapThreshold`, `hysteresisMargin`.
+     * Other fields (`enablePorts`, `elbowMargin`, `portHitRadius`,
+     * `stubLength`, `defaultLineType`, `defaultLineStyle`) are reserved
+     * for upcoming binding/routing tuning and are ignored for now.
      *
      * @example
      * ```tsx
      * <FlowCanvas
      *   connectionConfig={{
-     *     enablePorts: true,
      *     snapThreshold: 20,
-     *     defaultLineType: 'elbow',
+     *     hysteresisMargin: 8,
      *   }}
      * />
      * ```

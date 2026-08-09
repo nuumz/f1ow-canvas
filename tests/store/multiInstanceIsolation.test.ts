@@ -70,6 +70,8 @@ function createContextFor(store: Store) {
         currentElementIdRef: { current: null as string | null },
         shiftKeyRef: { current: false },
         startBindingRef: { current: null },
+        snapThreshold: 24,
+        hysteresisMargin: 6,
         setSnapTarget: vi.fn(),
         selectionBox: null,
         setSelectionBox: vi.fn(),
