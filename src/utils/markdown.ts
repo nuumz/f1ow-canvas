@@ -20,13 +20,19 @@ function decodeHtmlEntities(text: string): string {
 export function htmlToPlainText(html: string): string {
     if (!html) return '';
 
-    return decodeHtmlEntities(
-        html
-            .replace(/<br\s*\/?>/gi, '\n')
-            .replace(/<li\b[^>]*>/gi, '- ')
-            .replace(/<\/(?:p|div|h1|h2|h3|h4|h5|h6|li|blockquote|pre)>/gi, '\n')
-            .replace(/<[^>]+>/g, '')
-    )
+    const normalized = html
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<li\b[^>]*>/gi, '- ')
+        .replace(/<\/(?:p|div|h1|h2|h3|h4|h5|h6|li|blockquote|pre)>/gi, '\n');
+
+    let stripped = normalized;
+    let previous: string;
+    do {
+        previous = stripped;
+        stripped = stripped.replace(/<[^>]+>/g, '');
+    } while (stripped !== previous);
+
+    return decodeHtmlEntities(stripped)
         .replace(/\u00a0/g, ' ')
         .replace(/\r\n?/g, '\n')
         .replace(/[ \t]+\n/g, '\n')
