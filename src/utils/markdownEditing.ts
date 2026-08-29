@@ -8,10 +8,20 @@ function decodeHtmlEntities(text: string): string {
         .replace(/&amp;/g, '&');
 }
 
+function stripHtmlTagsFully(text: string): string {
+    let previous: string;
+    let current = text;
+    do {
+        previous = current;
+        current = current.replace(/<[^>]+>/g, '');
+    } while (current !== previous);
+    return current;
+}
+
 export function serializeEditableHtmlToMarkdown(html: string): string {
     if (!html) return '';
 
-    return decodeHtmlEntities(
+    const markdownLike = stripHtmlTagsFully(
         html
             .replace(/<br\s*\/?>/gi, '\n')
             .replace(/<(?:strong|b)\b[^>]*>/gi, '**')
@@ -22,8 +32,9 @@ export function serializeEditableHtmlToMarkdown(html: string): string {
             .replace(/<\/(?:del|s|strike)>/gi, '~~')
             .replace(/<li\b[^>]*>/gi, '- ')
             .replace(/<\/(?:p|div|h1|h2|h3|h4|h5|h6|li|blockquote|pre)>/gi, '\n')
-            .replace(/<[^>]+>/g, '')
-    )
+    );
+
+    return stripHtmlTagsFully(decodeHtmlEntities(markdownLike))
         .replace(/\u00a0/g, ' ')
         .replace(/\r\n?/g, '\n')
         .replace(/[ \t]+\n/g, '\n')
